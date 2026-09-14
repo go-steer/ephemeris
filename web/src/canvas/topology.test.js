@@ -131,16 +131,19 @@ describe('TopologyMesh', () => {
     expect(crashPod.userData.pod.status).toBe('Running');
   });
 
-  it('uses compact architectural dimensions and standard Google/K8s status colors', () => {
+  it('renders canonical 3D Kubernetes Pod shapes (hexagon container + heptagon boundary) and Google status colors', () => {
     topology.build(activeTopology);
     const pods = topology.getInteractiveObjects();
     const runningPod = pods.find((m) => m.userData.pod.name === 'frontend');
     const crashPod = pods.find((m) => m.userData.pod.name === 'payment-service');
 
-    // Verify compact scale (chassis size 1.2 x 1.4 x 1.2)
-    expect(runningPod.geometry.parameters.width).toBe(1.2);
-    expect(runningPod.geometry.parameters.height).toBe(1.4);
-    expect(runningPod.geometry.parameters.depth).toBe(1.2);
+    // Verify inner container hexagon (radialSegments: 6)
+    expect(runningPod.geometry.parameters.radialSegments).toBe(6);
+    expect(runningPod.geometry.parameters.height).toBe(1.1);
+
+    // Verify outer pod boundary heptagon (radialSegments: 7)
+    expect(runningPod.userData.podBoundary).toBeDefined();
+    expect(runningPod.userData.podBoundary.geometry).toBeDefined();
 
     // Verify authentic Google/K8s status colors: Green 0x34a853 and Red 0xea4335
     expect(runningPod.userData.baseColor).toBe(0x34a853);

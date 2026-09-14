@@ -29,8 +29,8 @@ export class SceneManager {
     this.animationFrameId = null;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x202124);
-    this.scene.fog = new THREE.FogExp2(0x202124, 0.0025);
+    this.scene.background = new THREE.Color(0x0b0f19);
+    this.scene.fog = new THREE.FogExp2(0x0b0f19, 0.0018);
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
@@ -47,7 +47,7 @@ export class SceneManager {
       this.renderer.setSize(width, height);
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.2;
+      this.renderer.toneMappingExposure = 1.15;
     } catch {
       // In headless or jsdom test environments without WebGL
       this.renderer = {
@@ -69,42 +69,42 @@ export class SceneManager {
   }
 
   _setupLighting() {
-    // Ambient light for base visibility across Google Cloud material surfaces
-    const ambient = new THREE.AmbientLight(0xffffff, 2.2);
+    // Ambient light with controlled intensity so darks retain contrast and depth
+    const ambient = new THREE.AmbientLight(0xffffff, 0.85);
     this.scene.add(ambient);
 
-    // Directional key light for crisp architectural shadows and highlights
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2.4);
-    dirLight.position.set(35, 55, 40);
+    // Directional key light for architectural specular highlights
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
+    dirLight.position.set(35, 55, 35);
     this.scene.add(dirLight);
 
-    // Cool secondary fill light in Google Blue
-    const fillLight = new THREE.DirectionalLight(0x8ab4f8, 1.4);
-    fillLight.position.set(-40, 25, -30);
+    // Secondary fill light in Google Blue (#4285F4)
+    const fillLight = new THREE.DirectionalLight(0x4285f4, 1.2);
+    fillLight.position.set(-35, 25, -25);
     this.scene.add(fillLight);
 
-    // Kubernetes brand blue upward bounce light
-    const k8sBounce = new THREE.DirectionalLight(0x326ce5, 1.0);
-    k8sBounce.position.set(0, -20, 20);
+    // Subtle Kubernetes brand blue upward bounce light (#326CE5)
+    const k8sBounce = new THREE.DirectionalLight(0x326ce5, 0.9);
+    k8sBounce.position.set(0, -15, 20);
     this.scene.add(k8sBounce);
   }
 
   _setupEnvironment() {
-    // Architectural spatial grid in Kubernetes blue and Google Material Slate
-    const gridHelper = new THREE.GridHelper(200, 40, 0x326ce5, 0x3c4043);
+    // Cyber-observability spatial grid in Google Blue and deep slate
+    const gridHelper = new THREE.GridHelper(240, 48, 0x4285f4, 0x1a2233);
     gridHelper.position.y = -0.2;
     gridHelper.material.opacity = 0.35;
     gridHelper.material.transparent = true;
     this.scene.add(gridHelper);
 
     // Subtle atmospheric dust particles
-    const particleCount = 400;
+    const particleCount = 350;
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(particleCount * 3);
     const colors = new Float32Array(particleCount * 3);
 
-    const blueColor = new THREE.Color(0x8ab4f8);
-    const greyColor = new THREE.Color(0x5f6368);
+    const blueColor = new THREE.Color(0x4285f4);
+    const slateColor = new THREE.Color(0x394557);
 
     for (let i = 0; i < particleCount; i++) {
       const i3 = i * 3;
@@ -112,7 +112,7 @@ export class SceneManager {
       positions[i3 + 1] = (Math.random() - 0.5) * 100 + 10;
       positions[i3 + 2] = (Math.random() - 0.5) * 280;
 
-      const mixed = Math.random() > 0.6 ? blueColor : greyColor;
+      const mixed = Math.random() > 0.5 ? blueColor : slateColor;
       colors[i3] = mixed.r;
       colors[i3 + 1] = mixed.g;
       colors[i3 + 2] = mixed.b;
@@ -122,7 +122,7 @@ export class SceneManager {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const material = new THREE.PointsMaterial({
-      size: 1.0,
+      size: 1.1,
       vertexColors: true,
       transparent: true,
       opacity: 0.35,
@@ -138,6 +138,9 @@ export class SceneManager {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    if (typeof this.renderer.setPixelRatio === 'function') {
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    }
   }
 
   /**
