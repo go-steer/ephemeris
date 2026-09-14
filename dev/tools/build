@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Build the distributable static bundle into ./dist/ and mirror into internal/webui/dist/
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+ensure_node_deps
+
+rm -rf dist
+mkdir -p dist
+
+# Execute Vite build
+npx --no-install vite build
+
+# The Go embed target lives in internal/webui/dist/
+rm -rf internal/webui/dist
+mkdir -p internal/webui/dist
+
+# Always recreate the gitkeep
+cat > internal/webui/dist/.gitkeep <<'EOF'
+# Populated by dev/tools/build. See internal/webui/webui.go for the embed.
+EOF
+
+if [[ -d dist ]] && [[ -n "$(ls -A dist 2>/dev/null)" ]]; then
+  cp -R dist/. internal/webui/dist/
+  echo "▸ built dist/ ($(find dist -type f | wc -l | tr -d ' ') files)"
+  echo "▸ mirrored into internal/webui/dist/ for go:embed"
+fi

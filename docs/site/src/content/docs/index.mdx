@@ -1,0 +1,23 @@
+---
+title: ephemeris
+description: Generative 3D spatial observability and ephemeral ArrowJS incident triage platform for Kubernetes.
+template: doc
+tableOfContents: true
+---
+
+`ephemeris` replaces static dashboards with an interactive 3D WebGL topological mesh of Google Kubernetes Engine (GKE) clusters and uses Gemini models (`gemini-3.8-flash` on Vertex AI) to compile ephemeral, reactive ArrowJS control interfaces on the fly during an incident.
+
+## The Core Paradigm Shift
+
+Static dashboards suffer from **dashboard rot** and **spatial blindness**:
+- **Dashboard Rot:** Fixed queries and rigid widgets become obsolete as declarative infrastructure shifts, forcing SREs to write ad-hoc queries mid-outage.
+- **Spatial Blindness:** Flat alert lists cannot communicate the physical blast radius or network dependency chain of an anomaly.
+
+**ephemeris** shifts observability from "predicting what data we might need" to "generating the exact interface we need, exactly when we need it, and destroying it when we are done."
+
+## Key Capabilities
+
+1. **WebGL 3D Topology Mesh:** An interactive force/orbital graph of clusters, namespaces, and pods rendered via Three.js with real-time status glow (green, red, amber) and raycaster selection.
+2. **Agentic UI Runtime (ArrowJS):** Secure `@arrow-js/core` reactive UI runtime executing inside an isolated `ShadowRoot` overlaying the canvas, with global browser APIs masked.
+3. **Go Orchestrator Daemon:** High-performance Go WebSocket hub (`/ws`) bridging user spatial context, GCP Managed MCP telemetry, and Vertex AI agent compilation.
+4. **Dual-Mode Telemetry:** High-fidelity mock cluster provider for rapid zero-dependency local iteration, and GCP Managed MCP provider (`container.googleapis.com/mcp`, `logging.googleapis.com/mcp`) via ADC for live production triage.

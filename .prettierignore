@@ -1,0 +1,7 @@
+dist/
+internal/webui/dist/
+node_modules/
+coverage.out
+docs/site/dist/
+docs/site/.astro/
+package-lock.json
