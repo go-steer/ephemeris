@@ -22,6 +22,7 @@ import (
 
 	"github.com/go-steer/ephemeris/internal/webui"
 	"github.com/go-steer/ephemeris/pkg/gke"
+	"github.com/go-steer/ephemeris/pkg/mcp"
 	"github.com/go-steer/ephemeris/pkg/orchestrator"
 	"github.com/go-steer/ephemeris/pkg/telemetry"
 )
@@ -33,6 +34,8 @@ func main() {
 	gcpProject := flag.String("gcp-project", orchestrator.GetEnvOrDefault("GOOGLE_CLOUD_PROJECT", ""), "GCP Project ID")
 	vertexLocation := flag.String("vertex-location", orchestrator.GetEnvOrDefault("VERTEX_LOCATION", "global"), "Vertex AI Location (default: global)")
 	model := flag.String("model", orchestrator.GetEnvOrDefault("GEMINI_MODEL", "gemini-3.8-flash"), "Gemini model identifier")
+	gkeMCPEndpoint := flag.String("gke-mcp-endpoint", orchestrator.GetEnvOrDefault("GKE_MCP_ENDPOINT", "https://container.googleapis.com/mcp"), "GKE MCP endpoint URL")
+	loggingMCPEndpoint := flag.String("logging-mcp-endpoint", orchestrator.GetEnvOrDefault("LOGGING_MCP_ENDPOINT", "https://logging.googleapis.com/mcp"), "Logging MCP endpoint URL")
 	flag.Parse()
 
 	log.Printf("Starting ephemeris daemon [mode=%s, port=%d, model=%s, location=%s]", *mode, *port, *model, *vertexLocation)
@@ -43,9 +46,38 @@ func main() {
 	var gkeProvider gke.Provider
 	var telemProvider telemetry.Provider
 
-	// Default to mock for Phase 1
-	gkeProvider = gke.NewMockProvider()
-	telemProvider = telemetry.NewMockProvider()
+	if *mode == "live" {
+		if *gcpProject == "" {
+			log.Printf("Warning: -mode=live specified but -gcp-project is empty; falling back to mock providers")
+			gkeProvider = gke.NewMockProvider()
+			telemProvider = telemetry.NewMockProvider()
+		} else {
+			gkeClient, err := mcp.NewClient(ctx, mcp.ClientConfig{
+				BaseURL: *gkeMCPEndpoint,
+			})
+			if err != nil {
+				log.Printf("Warning: failed to initialize GKE MCP client (%v); falling back to mock GKE provider", err)
+				gkeProvider = gke.NewMockProvider()
+			} else {
+				log.Printf("Using live GKE MCP provider connecting to %s for project %s", *gkeMCPEndpoint, *gcpProject)
+				gkeProvider = gke.NewMCPProvider(gkeClient, *gcpProject)
+			}
+
+			logClient, err := mcp.NewClient(ctx, mcp.ClientConfig{
+				BaseURL: *loggingMCPEndpoint,
+			})
+			if err != nil {
+				log.Printf("Warning: failed to initialize Logging MCP client (%v); falling back to mock telemetry provider", err)
+				telemProvider = telemetry.NewMockProvider()
+			} else {
+				log.Printf("Using live Logging MCP provider connecting to %s for project %s", *loggingMCPEndpoint, *gcpProject)
+				telemProvider = telemetry.NewMCPProvider(logClient, *gcpProject)
+			}
+		}
+	} else {
+		gkeProvider = gke.NewMockProvider()
+		telemProvider = telemetry.NewMockProvider()
+	}
 
 	// 2. Initialize Vertex AI Agent
 	forceMock := (*mode == "mock")
