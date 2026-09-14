@@ -86,10 +86,10 @@ describe('CameraControls', () => {
     expect(controls.targetLookAt.y).toBeCloseTo(1.4);
     expect(controls.targetLookAt.z).toBe(20);
 
-    // Camera offset provides isometric breathing room (5.5, 4.0, 7.0)
-    expect(controls.targetCameraPos.x).toBeCloseTo(15.5);
-    expect(controls.targetCameraPos.y).toBeCloseTo(5.0);
-    expect(controls.targetCameraPos.z).toBeCloseTo(27.0);
+    // Camera offset provides unobstructed close-up foreground framing (-3.0, 2.5, 5.2)
+    expect(controls.targetCameraPos.x).toBeCloseTo(7.0);
+    expect(controls.targetCameraPos.y).toBeCloseTo(3.5);
+    expect(controls.targetCameraPos.z).toBeCloseTo(25.2);
 
     // Reticle visible and centered
     expect(controls.reticleGroup.visible).toBe(true);
@@ -118,8 +118,9 @@ describe('CameraControls', () => {
     expect(controls.targetLookAt.x).toBeCloseTo(40);
     expect(controls.targetLookAt.y).toBeCloseTo(3.1);
     expect(controls.targetLookAt.z).toBeCloseTo(60);
-    expect(controls.targetCameraPos.x).toBeCloseTo(45.5);
-    expect(controls.targetCameraPos.z).toBeCloseTo(67.0);
+    expect(controls.targetCameraPos.x).toBeCloseTo(37.0);
+    expect(controls.targetCameraPos.y).toBeCloseTo(5.2);
+    expect(controls.targetCameraPos.z).toBeCloseTo(65.2);
   });
 
   it('focuses camera smoothly on a cluster position', () => {

@@ -224,8 +224,9 @@ export class CameraControls {
   /**
    * Focus camera and place reticle on a specific pod mesh.
    * @param {THREE.Mesh} mesh
+   * @param {THREE.Vector3} [customOffset=null]
    */
-  focusOnMesh(mesh) {
+  focusOnMesh(mesh, customOffset = null) {
     if (this.selectedMesh && this.selectedMesh !== mesh) {
       this.selectedMesh.scale.set(1.0, 1.0, 1.0);
     }
@@ -249,8 +250,8 @@ export class CameraControls {
     this.targetLookAt.copy(meshPos);
     this.targetLookAt.y += 0.4;
 
-    // Offset camera with comfortable isometric framing (no clipping into mesh)
-    const offset = new THREE.Vector3(5.5, 4.0, 7.0);
+    // Close-up foreground isometric offset framing the pod cleanly without foreground obstruction
+    const offset = customOffset || new THREE.Vector3(-3.0, 2.5, 5.2);
     this.targetCameraPos.copy(meshPos).add(offset);
     this.isTransitioning = true;
 
