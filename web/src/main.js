@@ -66,7 +66,95 @@ export function initializeApp() {
     hud.setSelectedPod(null);
   };
 
+  // Wire Camera Mode toggle (Orbit vs Pan)
+  hud.onCameraModeChange = (mode) => {
+    controls.setNavMode(mode);
+    hud.setStatusMessage(
+      mode === 'pan'
+        ? 'Pan mode active: Left-click and drag to move camera focus across the spatial mesh.'
+        : 'Orbit mode active: Left-click and drag to rotate view around target.',
+      false
+    );
+  };
+
   let currentTopologyData = null;
+
+  // Resolve target pod from prompt text, looking for issues or specific pod names
+  const findTargetPodFromPrompt = (promptText, activePod, topologyData) => {
+    if (!topologyData || !topologyData.clusters) return null;
+    const text = (promptText || '').toLowerCase();
+
+    // 1. Check for specific pod or service name mentioned in the prompt
+    for (const cluster of topologyData.clusters) {
+      for (const ns of cluster.namespaces || []) {
+        for (const p of ns.pods || []) {
+          const pName = (p.name || '').toLowerCase();
+          if (text.includes(pName) || (p.id && text.includes(p.id.toLowerCase()))) {
+            return { pod: p, meta: { namespaceName: ns.name, clusterName: cluster.name } };
+          }
+        }
+      }
+    }
+
+    // 2. If prompt asks for issues, errors, crash, triage, fix, or if no pod is currently active
+    const issueKeywords = [
+      'issue',
+      'error',
+      'crash',
+      'fail',
+      'broken',
+      'triage',
+      'fix',
+      'rollback',
+      'panic',
+      'oom',
+      'blast',
+      'why',
+      'what',
+      'status',
+      'help',
+    ];
+    const isAskingAboutIssues = issueKeywords.some((k) => text.includes(k));
+
+    if (isAskingAboutIssues || !activePod) {
+      // First priority: CrashLoopBackOff or Failed across all clusters
+      for (const cluster of topologyData.clusters) {
+        for (const ns of cluster.namespaces || []) {
+          const crashPod = (ns.pods || []).find(
+            (p) => p.status === 'CrashLoopBackOff' || p.status === 'Failed'
+          );
+          if (crashPod) {
+            return { pod: crashPod, meta: { namespaceName: ns.name, clusterName: cluster.name } };
+          }
+        }
+      }
+
+      // Second priority: Pending pods
+      for (const cluster of topologyData.clusters) {
+        for (const ns of cluster.namespaces || []) {
+          const pendingPod = (ns.pods || []).find((p) => p.status === 'Pending');
+          if (pendingPod) {
+            return { pod: pendingPod, meta: { namespaceName: ns.name, clusterName: cluster.name } };
+          }
+        }
+      }
+    }
+
+    if (activePod) {
+      return { pod: activePod, meta: hud.selectedMeta };
+    }
+
+    // Fallback: first available pod
+    const firstCluster = topologyData.clusters[0];
+    if (firstCluster?.namespaces?.[0]?.pods?.[0]) {
+      return {
+        pod: firstCluster.namespaces[0].pods[0],
+        meta: { namespaceName: firstCluster.namespaces[0].name, clusterName: firstCluster.name },
+      };
+    }
+
+    return null;
+  };
 
   // Wire Cluster Switcher -> Smooth 3D Navigation
   hud.onClusterSelect = (clusterName) => {
@@ -136,13 +224,54 @@ export function initializeApp() {
   document.addEventListener('ephemeris-remediated', onRemediate);
   window.addEventListener('ephemeris-remediated', onRemediate);
 
-  // 5. Wire Prompt Submission -> WebSocket & Latency Timer
+  // 5. Wire Prompt Submission -> Intelligent Target Resolution & WebSocket
   hud.onPromptSubmit = (promptText, pod, meta) => {
-    promptStartTime = performance.now();
-    hud.setStatusMessage(`Investigating ${pod.name}: "${promptText}"...`, true);
+    let targetPod = pod;
+    let targetMeta = meta;
 
-    const resourceUri = pod.resource_uri || `gke://${meta?.namespaceName || 'default'}/${pod.name}`;
-    ws.sendPrompt(pod.id, resourceUri, promptText);
+    // Resolve target pod if needed or if prompt explicitly requests a resource
+    const resolved = findTargetPodFromPrompt(promptText, pod, currentTopologyData);
+    if (resolved && resolved.pod) {
+      targetPod = resolved.pod;
+      targetMeta = resolved.meta;
+    }
+
+    if (!targetPod) {
+      hud.setStatusMessage('No Kubernetes resources found matching prompt.', false);
+      return;
+    }
+
+    // Switch cluster if target pod is in a different cluster
+    if (targetMeta && targetMeta.clusterName) {
+      const select = document.getElementById('hud-cluster-select');
+      if (select && select.value !== targetMeta.clusterName) {
+        select.value = targetMeta.clusterName;
+        hud.onClusterSelect(targetMeta.clusterName);
+      }
+    }
+
+    // Smoothly focus camera on the target pod in 3D topology
+    let targetMesh =
+      topologyMesh.podMap.get(targetPod.name) || topologyMesh.podMap.get(targetPod.id);
+    if (!targetMesh) {
+      for (const [k, m] of topologyMesh.podMap.entries()) {
+        if (k.includes(targetPod.name) || targetPod.name.includes(k)) {
+          targetMesh = m;
+          break;
+        }
+      }
+    }
+    if (targetMesh) {
+      controls.focusOnMesh(targetMesh);
+    }
+
+    hud.setSelectedPod(targetPod, targetMeta);
+    promptStartTime = performance.now();
+    hud.setStatusMessage(`Investigating ${targetPod.name}: "${promptText}"...`, true);
+
+    const resourceUri =
+      targetPod.resource_uri || `gke://${targetMeta?.namespaceName || 'default'}/${targetPod.name}`;
+    ws.sendPrompt(targetPod.id, resourceUri, promptText);
   };
 
   // 6. Handle WebSocket events

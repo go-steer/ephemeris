@@ -30,13 +30,13 @@ export class SceneManager {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x202124);
-    this.scene.fog = new THREE.FogExp2(0x202124, 0.0035);
+    this.scene.fog = new THREE.FogExp2(0x202124, 0.0025);
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
 
-    this.camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 1000);
-    this.camera.position.set(0, 48, 76);
+    this.camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
+    this.camera.position.set(0, 34, 52);
 
     try {
       this.renderer = new THREE.WebGLRenderer({
@@ -47,7 +47,7 @@ export class SceneManager {
       this.renderer.setSize(width, height);
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.15;
+      this.renderer.toneMappingExposure = 1.2;
     } catch {
       // In headless or jsdom test environments without WebGL
       this.renderer = {
@@ -70,30 +70,30 @@ export class SceneManager {
 
   _setupLighting() {
     // Ambient light for base visibility across Google Cloud material surfaces
-    const ambient = new THREE.AmbientLight(0xe8eaed, 1.8);
+    const ambient = new THREE.AmbientLight(0xffffff, 2.2);
     this.scene.add(ambient);
 
     // Directional key light for crisp architectural shadows and highlights
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
-    dirLight.position.set(40, 70, 50);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.4);
+    dirLight.position.set(35, 55, 40);
     this.scene.add(dirLight);
 
-    // Cool secondary fill light
-    const fillLight = new THREE.DirectionalLight(0x8ab4f8, 1.2);
-    fillLight.position.set(-50, 30, -40);
+    // Cool secondary fill light in Google Blue
+    const fillLight = new THREE.DirectionalLight(0x8ab4f8, 1.4);
+    fillLight.position.set(-40, 25, -30);
     this.scene.add(fillLight);
 
-    // Soft Aurora rim accent
-    const rimLight = new THREE.DirectionalLight(0xa770ef, 0.8);
-    rimLight.position.set(0, -20, -50);
-    this.scene.add(rimLight);
+    // Kubernetes brand blue upward bounce light
+    const k8sBounce = new THREE.DirectionalLight(0x326ce5, 1.0);
+    k8sBounce.position.set(0, -20, 20);
+    this.scene.add(k8sBounce);
   }
 
   _setupEnvironment() {
-    // Architectural spatial grid in Google Material Grey 800 and 700
-    const gridHelper = new THREE.GridHelper(260, 52, 0x5f6368, 0x2a2b2e);
-    gridHelper.position.y = -1.2;
-    gridHelper.material.opacity = 0.4;
+    // Architectural spatial grid in Kubernetes blue and Google Material Slate
+    const gridHelper = new THREE.GridHelper(200, 40, 0x326ce5, 0x3c4043);
+    gridHelper.position.y = -0.2;
+    gridHelper.material.opacity = 0.35;
     gridHelper.material.transparent = true;
     this.scene.add(gridHelper);
 

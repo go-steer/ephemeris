@@ -241,6 +241,40 @@ body {
   gap: 10px;
 }
 
+.camera-mode-toggle {
+  display: flex;
+  align-items: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  overflow: hidden;
+  padding: 2px;
+}
+
+.mode-btn {
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  padding: 4px 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  border-radius: 3px;
+}
+
+.mode-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mode-btn.active {
+  background: #3c4043;
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
 .hud-btn {
   background: var(--bg-elevated);
   color: var(--text-primary);

@@ -14,50 +14,73 @@
 
 import * as THREE from 'three';
 
-// Google Cloud status color tokens (matching Pantheon / Cloud Console)
+// Google Cloud & Kubernetes standard status color tokens
 const STATUS_COLORS = {
-  Running: { color: 0x81c995, emissive: 0x81c995, text: '#81c995' },
-  CrashLoopBackOff: { color: 0xf28b82, emissive: 0xf28b82, text: '#f28b82' },
-  Pending: { color: 0xfdd663, emissive: 0xfdd663, text: '#fdd663' },
-  Failed: { color: 0xf28b82, emissive: 0xf28b82, text: '#f28b82' },
+  Running: { color: 0x34a853, emissive: 0x137333, text: '#34a853' },
+  CrashLoopBackOff: { color: 0xea4335, emissive: 0xd93025, text: '#ea4335' },
+  Pending: { color: 0xfbbc04, emissive: 0xf9ab00, text: '#fbbc04' },
+  Failed: { color: 0xea4335, emissive: 0xd93025, text: '#ea4335' },
   Unknown: { color: 0x9aa0a6, emissive: 0x5f6368, text: '#9aa0a6' },
 };
 
 /**
- * Creates a crisp billboard text sprite formatted in Google Cloud Console typography.
+ * Creates a crisp billboard text sprite formatted in Google Cloud / K8s typography.
+ * Dynamically sizes the canvas to eliminate text overflow and clipping.
  */
-function createTextSprite(text, color = '#e8eaed', fontSize = 26, badge = '') {
+function createTextSprite(text, color = '#e8eaed', fontSize = 16, badge = '') {
+  const displayText = badge ? `${text}  •  ${badge}` : text;
+
+  // Use a measurement canvas
+  const measureCanvas = document.createElement('canvas');
+  const measureCtx = measureCanvas.getContext('2d');
+  if (!measureCtx) return new THREE.Object3D();
+
+  measureCtx.font = `600 ${fontSize}px "Google Sans", Roboto, -apple-system, BlinkMacSystemFont, monospace`;
+  const textWidth = measureCtx.measureText(displayText).width;
+
+  const padX = 16;
+  const padY = 7;
+  const canvasWidth = Math.max(128, Math.ceil(textWidth + padX * 2));
+  const canvasHeight = Math.ceil(fontSize + padY * 2);
+
+  // Render on high-DPR canvas for razor-sharp text
+  const dpr = 2;
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 128;
+  canvas.width = canvasWidth * dpr;
+  canvas.height = canvasHeight * dpr;
   const ctx = canvas.getContext('2d');
   if (!ctx) return new THREE.Object3D();
 
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (typeof ctx.scale === 'function') {
+    ctx.scale(dpr, dpr);
+  }
+
+  // Background pill in Google Cloud dark surface
+  ctx.fillStyle = 'rgba(32, 33, 36, 0.92)';
+  ctx.beginPath();
+  ctx.roundRect(1, 1, canvasWidth - 2, canvasHeight - 2, 5);
+  ctx.fill();
+
+  // Subtle border hairline matching status or K8s blue
+  const isRed = color === '#ea4335' || color === '#f28b82';
+  const isGreen = color === '#34a853' || color === '#81c995';
+  const isYellow = color === '#fbbc04' || color === '#fdd663';
+  ctx.strokeStyle = isRed
+    ? 'rgba(234, 67, 53, 0.85)'
+    : isGreen
+      ? 'rgba(52, 168, 83, 0.85)'
+      : isYellow
+        ? 'rgba(251, 188, 4, 0.85)'
+        : 'rgba(50, 108, 229, 0.7)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // Draw text centered
   ctx.font = `600 ${fontSize}px "Google Sans", Roboto, -apple-system, BlinkMacSystemFont, monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-
-  const displayText = badge ? `${text} [${badge}]` : text;
-  const textWidth = ctx.measureText(displayText).width;
-  const pillWidth = Math.min(textWidth + 28, 490);
-  const pillHeight = fontSize + 16;
-  const pillX = (canvas.width - pillWidth) / 2;
-  const pillY = (canvas.height - pillHeight) / 2;
-
-  // Google Material dark surface card pill
-  ctx.fillStyle = 'rgba(32, 33, 36, 0.88)';
-  ctx.beginPath();
-  ctx.roundRect(pillX, pillY, pillWidth, pillHeight, 6);
-  ctx.fill();
-
-  // Subtle border hairline
-  ctx.strokeStyle = color === '#f28b82' ? 'rgba(242, 139, 130, 0.6)' : 'rgba(138, 180, 248, 0.4)';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
   ctx.fillStyle = color;
-  ctx.fillText(displayText, canvas.width / 2, canvas.height / 2);
+  ctx.fillText(displayText, canvasWidth / 2, canvasHeight / 2);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
@@ -67,7 +90,11 @@ function createTextSprite(text, color = '#e8eaed', fontSize = 26, badge = '') {
     depthWrite: false,
   });
   const sprite = new THREE.Sprite(spriteMaterial);
-  sprite.scale.set(10, 2.5, 1);
+
+  // Proportional world scale
+  const worldHeight = fontSize >= 18 ? 0.85 : 0.6;
+  const worldWidth = worldHeight * (canvasWidth / canvasHeight);
+  sprite.scale.set(worldWidth, worldHeight, 1);
   return sprite;
 }
 
@@ -115,7 +142,7 @@ export class TopologyMesh {
           cz = 0;
         } else {
           const angle = ((idx - 1) / (clusterCount - 1)) * Math.PI + Math.PI / 6;
-          const dist = 78;
+          const dist = 48;
           cx = Math.cos(angle) * dist;
           cz = Math.sin(angle) * dist;
         }
@@ -135,73 +162,68 @@ export class TopologyMesh {
     const clusterGroup = new THREE.Group();
     clusterGroup.position.copy(center);
 
-    // 1. Base Hexagonal Pedestal (Tiered architectural slab)
-    const platformGeo = new THREE.CylinderGeometry(28, 30, 1.8, 6);
+    // 1. Base Hexagonal Pedestal (Tiered architectural slab in Google Cloud Console Slate)
+    const platformGeo = new THREE.CylinderGeometry(15, 16, 0.8, 6);
     const platformMat = new THREE.MeshStandardMaterial({
-      color: 0x2a2b2e,
-      roughness: 0.75,
-      metalness: 0.25,
+      color: 0x2d3139,
+      roughness: 0.65,
+      metalness: 0.35,
     });
     const platformMesh = new THREE.Mesh(platformGeo, platformMat);
-    platformMesh.position.y = 0.9;
+    platformMesh.position.y = 0.4;
     platformMesh.receiveShadow = true;
     clusterGroup.add(platformMesh);
 
-    // Platform upper rim loop in Google Cloud Grey 700
+    // Platform upper rim loop in Kubernetes Brand Blue (#326ce5)
     const rimPoints = [];
     for (let i = 0; i <= 6; i++) {
       const theta = (i / 6) * Math.PI * 2;
-      rimPoints.push(new THREE.Vector3(Math.cos(theta) * 28.1, 1.82, Math.sin(theta) * 28.1));
+      rimPoints.push(new THREE.Vector3(Math.cos(theta) * 15.05, 0.82, Math.sin(theta) * 15.05));
     }
     const rimGeo = new THREE.BufferGeometry().setFromPoints(rimPoints);
     const rimMat = new THREE.LineBasicMaterial({
-      color: 0x5f6368,
+      color: 0x326ce5,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.85,
     });
     const rimLine = new THREE.Line(rimGeo, rimMat);
     clusterGroup.add(rimLine);
 
-    // 2. Central Infrastructure Monolith Column (Server Rack Pillar)
-    const monolithGeo = new THREE.BoxGeometry(3.6, 8.0, 3.6);
+    // 2. Central Kubernetes Control Plane Master Node (Sleek totem)
+    const monolithGeo = new THREE.BoxGeometry(1.4, 3.2, 1.4);
     const monolithMat = new THREE.MeshStandardMaterial({
-      color: 0x1f2023,
+      color: 0x326ce5,
       roughness: 0.35,
-      metalness: 0.65,
+      metalness: 0.5,
     });
     const monolithMesh = new THREE.Mesh(monolithGeo, monolithMat);
-    monolithMesh.position.y = 4.9;
+    monolithMesh.position.y = 2.0;
     clusterGroup.add(monolithMesh);
 
-    // Subtle vertical LED indicator slit
+    // Vertical status LED slit
     const hasCrash = (cluster.namespaces || []).some((ns) =>
       (ns.pods || []).some((p) => p.status === 'CrashLoopBackOff' || p.status === 'Failed')
     );
-    const slitColor = hasCrash ? 0xf28b82 : 0x8ab4f8;
+    const slitColor = hasCrash ? 0xea4335 : 0x4285f4;
 
-    const slitGeo = new THREE.BoxGeometry(0.3, 7.2, 3.65);
+    const slitGeo = new THREE.BoxGeometry(0.12, 2.8, 1.44);
     const slitMat = new THREE.MeshStandardMaterial({
       color: slitColor,
       emissive: slitColor,
-      emissiveIntensity: 1.2,
+      emissiveIntensity: 1.4,
       roughness: 0.2,
     });
     const slitMesh = new THREE.Mesh(slitGeo, slitMat);
-    slitMesh.position.y = 4.9;
+    slitMesh.position.y = 2.0;
     clusterGroup.add(slitMesh);
 
     this.clusterMonoliths.push(monolithMesh);
 
     // 3. Cluster Plaque Billboard
     const statusLabel = hasCrash ? '1 ALERT' : 'HEALTHY';
-    const statusTextColor = hasCrash ? '#f28b82' : '#81c995';
-    const plaqueSprite = createTextSprite(
-      `${cluster.name} [${cluster.location || 'us-central1'}]`,
-      statusTextColor,
-      26,
-      statusLabel
-    );
-    plaqueSprite.position.set(0, 10.2, 0);
+    const statusTextColor = hasCrash ? '#ea4335' : '#34a853';
+    const plaqueSprite = createTextSprite(cluster.name, statusTextColor, 18, statusLabel);
+    plaqueSprite.position.set(0, 4.3, 0);
     clusterGroup.add(plaqueSprite);
 
     this.group.add(clusterGroup);
@@ -222,7 +244,7 @@ export class TopologyMesh {
         nz = 0;
       } else {
         const nsAngle = (nsIdx / nsCount) * Math.PI * 2;
-        const nsDistance = 14.5;
+        const nsDistance = 8.5;
         nx = Math.cos(nsAngle) * nsDistance;
         nz = Math.sin(nsAngle) * nsDistance;
       }
@@ -234,39 +256,39 @@ export class TopologyMesh {
       );
 
       // Namespace territory platform zone
-      const nsPadGeo = new THREE.CylinderGeometry(9.5, 10.0, 0.35, 6);
+      const nsPadGeo = new THREE.CylinderGeometry(5.2, 5.6, 0.2, 6);
       const nsPadMat = new THREE.MeshStandardMaterial({
-        color: 0x242528,
-        roughness: 0.8,
-        metalness: 0.2,
+        color: 0x252a36,
+        roughness: 0.7,
+        metalness: 0.3,
       });
       const nsPadMesh = new THREE.Mesh(nsPadGeo, nsPadMat);
-      nsPadMesh.position.set(zoneCenter.x, 1.95, zoneCenter.z);
+      nsPadMesh.position.set(zoneCenter.x, 0.9, zoneCenter.z);
       this.group.add(nsPadMesh);
 
-      // Namespace border line
+      // Namespace border line (Kubernetes accent)
       const nsRimPoints = [];
       for (let i = 0; i <= 6; i++) {
         const theta = (i / 6) * Math.PI * 2;
         nsRimPoints.push(
           new THREE.Vector3(
-            zoneCenter.x + Math.cos(theta) * 9.6,
-            2.15,
-            zoneCenter.z + Math.sin(theta) * 9.6
+            zoneCenter.x + Math.cos(theta) * 5.3,
+            1.02,
+            zoneCenter.z + Math.sin(theta) * 5.3
           )
         );
       }
       const nsRimGeo = new THREE.BufferGeometry().setFromPoints(nsRimPoints);
       const nsRimMat = new THREE.LineBasicMaterial({
-        color: 0x3c4043,
+        color: 0x326ce5,
         transparent: true,
-        opacity: 0.8,
+        opacity: 0.65,
       });
       this.group.add(new THREE.Line(nsRimGeo, nsRimMat));
 
       // Namespace header sprite tag
-      const nsSprite = createTextSprite(`ns: ${ns.name}`, '#bdc1c6', 22);
-      nsSprite.position.set(zoneCenter.x, 3.2, zoneCenter.z - 8.5);
+      const nsSprite = createTextSprite(`ns: ${ns.name}`, '#9aa0a6', 14);
+      nsSprite.position.set(zoneCenter.x, 1.5, zoneCenter.z - 4.4);
       this.group.add(nsSprite);
 
       // Pods within this namespace territory
@@ -285,7 +307,7 @@ export class TopologyMesh {
 
       if (podCount > 1) {
         const angle = (i / podCount) * Math.PI * 2;
-        const radius = Math.min(5.5, 2.5 + podCount * 0.8);
+        const radius = Math.min(3.2, 1.4 + podCount * 0.4);
         px = zoneCenter.x + Math.cos(angle) * radius;
         pz = zoneCenter.z + Math.sin(angle) * radius;
       }
@@ -294,57 +316,57 @@ export class TopologyMesh {
       const colorScheme = STATUS_COLORS[status] || STATUS_COLORS.Unknown;
       const isCrash = status === 'CrashLoopBackOff' || status === 'Failed';
 
-      // Pod Architectural Compute Node (Beveled chassis + top status plate)
+      // Pod Architectural Compute Node (Proportional container + top status LED)
       const podGroup = new THREE.Group();
-      podGroup.position.set(px, 2.15, pz);
+      podGroup.position.set(px, 1.0, pz);
 
-      // Main container chassis
-      const chassisGeo = new THREE.BoxGeometry(2.4, 2.8, 2.4);
+      // Main container chassis in Google Cloud container slate
+      const chassisGeo = new THREE.BoxGeometry(1.2, 1.4, 1.2);
       const chassisMat = new THREE.MeshStandardMaterial({
-        color: 0x2a2b2e,
-        roughness: 0.45,
-        metalness: 0.55,
+        color: 0x3c4043,
+        roughness: 0.4,
+        metalness: 0.45,
       });
       const chassisMesh = new THREE.Mesh(chassisGeo, chassisMat);
-      chassisMesh.position.y = 1.4;
+      chassisMesh.position.y = 0.7;
       chassisMesh.castShadow = true;
       podGroup.add(chassisMesh);
 
-      // Bevel edge highlight
+      // Bevel edge highlight colored by Kubernetes/Google status
       const edgesGeo = new THREE.EdgesGeometry(chassisGeo);
       const edgeMat = new THREE.LineBasicMaterial({
         color: colorScheme.color,
         transparent: true,
-        opacity: isCrash ? 0.8 : 0.4,
+        opacity: isCrash ? 0.9 : 0.6,
       });
       const edges = new THREE.LineSegments(edgesGeo, edgeMat);
-      edges.position.y = 1.4;
+      edges.position.y = 0.7;
       podGroup.add(edges);
 
       // Top Status LED Cap
-      const capGeo = new THREE.BoxGeometry(2.0, 0.4, 2.0);
+      const capGeo = new THREE.BoxGeometry(1.0, 0.2, 1.0);
       const capMat = new THREE.MeshStandardMaterial({
         color: colorScheme.color,
         emissive: colorScheme.emissive,
-        emissiveIntensity: isCrash ? 1.4 : 0.8,
+        emissiveIntensity: isCrash ? 1.6 : 1.0,
         roughness: 0.2,
       });
       const capMesh = new THREE.Mesh(capGeo, capMat);
-      capMesh.position.y = 2.9;
+      capMesh.position.y = 1.45;
       podGroup.add(capMesh);
 
       // Pulsing alert wireframe beacon for CrashLoopBackOff
       let alertBeacon = null;
       if (isCrash) {
-        const beaconGeo = new THREE.BoxGeometry(3.0, 3.4, 3.0);
+        const beaconGeo = new THREE.BoxGeometry(1.6, 1.8, 1.6);
         const beaconMat = new THREE.MeshBasicMaterial({
-          color: 0xf28b82,
+          color: 0xea4335,
           wireframe: true,
           transparent: true,
-          opacity: 0.5,
+          opacity: 0.6,
         });
         alertBeacon = new THREE.Mesh(beaconGeo, beaconMat);
-        alertBeacon.position.y = 1.4;
+        alertBeacon.position.y = 0.7;
         podGroup.add(alertBeacon);
       }
 
@@ -359,6 +381,7 @@ export class TopologyMesh {
         isCrashLoop: isCrash,
         podGroup: podGroup,
         capMesh: capMesh,
+        edgeMesh: edges,
         alertBeacon: alertBeacon,
       };
 
@@ -368,8 +391,8 @@ export class TopologyMesh {
 
       // Pod name billboard tag
       const subtitle = pod.restarts > 0 ? `${pod.restarts} restarts` : '';
-      const nameSprite = createTextSprite(pod.name, colorScheme.text, 22, subtitle);
-      nameSprite.position.set(0, 4.2, 0);
+      const nameSprite = createTextSprite(pod.name, colorScheme.text, 13, subtitle);
+      nameSprite.position.set(0, 2.05, 0);
       podGroup.add(nameSprite);
 
       this.group.add(podGroup);
@@ -381,12 +404,12 @@ export class TopologyMesh {
 
   _buildDependencyCurves() {
     const connections = [
-      { from: 'frontend', to: 'cart-service', color: 0x8ab4f8 },
-      { from: 'cart-service', to: 'payment-service', color: 0xf28b82 },
-      { from: 'frontend', to: 'catalog-service', color: 0x81c995 },
-      { from: 'spark-master', to: 'spark-worker-01', color: 0x8ab4f8 },
-      { from: 'spark-master', to: 'spark-worker-02', color: 0x8ab4f8 },
-      { from: 'stage-frontend', to: 'stage-auth', color: 0x81c995 },
+      { from: 'frontend', to: 'cart-service', color: 0x4285f4 },
+      { from: 'cart-service', to: 'payment-service', color: 0xea4335 },
+      { from: 'frontend', to: 'catalog-service', color: 0x34a853 },
+      { from: 'spark-master', to: 'spark-worker-01', color: 0x4285f4 },
+      { from: 'spark-master', to: 'spark-worker-02', color: 0x4285f4 },
+      { from: 'stage-frontend', to: 'stage-auth', color: 0x34a853 },
     ];
 
     connections.forEach(({ from, to, color }) => {
@@ -403,11 +426,11 @@ export class TopologyMesh {
       if (fromMesh && toMesh) {
         const start = new THREE.Vector3();
         fromMesh.getWorldPosition(start);
-        start.y += 1.5;
+        start.y += 0.7;
 
         const end = new THREE.Vector3();
         toMesh.getWorldPosition(end);
-        end.y += 1.5;
+        end.y += 0.7;
 
         this._createCurve(start, end, color);
       }
@@ -416,7 +439,7 @@ export class TopologyMesh {
 
   _createCurve(start, end, colorHex) {
     const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-    mid.y += 3.8;
+    mid.y += 1.6;
 
     const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
     const points = curve.getPoints(40);
@@ -425,15 +448,15 @@ export class TopologyMesh {
     const material = new THREE.LineBasicMaterial({
       color: colorHex,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.5,
     });
     const line = new THREE.Line(geometry, material);
     this.group.add(line);
 
     // Particle flow animation along curve
-    const particleCount = 4;
+    const particleCount = 3;
     for (let i = 0; i < particleCount; i++) {
-      const pGeo = new THREE.SphereGeometry(0.2, 8, 8);
+      const pGeo = new THREE.SphereGeometry(0.1, 8, 8);
       const pMat = new THREE.MeshBasicMaterial({
         color: colorHex,
         transparent: true,
@@ -511,6 +534,12 @@ export class TopologyMesh {
       targetMesh.userData.capMesh.material.color.setHex(colorScheme.color);
       targetMesh.userData.capMesh.material.emissive.setHex(colorScheme.emissive);
       targetMesh.userData.capMesh.material.emissiveIntensity = 1.0;
+    }
+
+    // Turn edge highlight to green
+    if (targetMesh.userData.edgeMesh) {
+      targetMesh.userData.edgeMesh.material.color.setHex(colorScheme.color);
+      targetMesh.userData.edgeMesh.material.opacity = 0.6;
     }
   }
 

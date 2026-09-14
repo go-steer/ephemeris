@@ -35,6 +35,52 @@ describe('initializeApp', () => {
     expect(app.ws).toBeDefined();
   });
 
+  it('switches camera mode between orbit and pan via hud', () => {
+    const app = initializeApp();
+    app.hud.onCameraModeChange('pan');
+    expect(app.controls.navMode).toBe('pan');
+
+    app.hud.onCameraModeChange('orbit');
+    expect(app.controls.navMode).toBe('orbit');
+  });
+
+  it('resolves issue pod and focuses camera when prompt is submitted without selection', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'prod',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                { id: 'pod-1', name: 'healthy-srv', status: 'Running' },
+                { id: 'pod-2', name: 'payment-service', status: 'CrashLoopBackOff' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+
+    let sentPrompt = null;
+    app.ws.sendPrompt = (id, uri, prompt) => {
+      sentPrompt = { id, uri, prompt };
+    };
+
+    // Submit prompt without clicking any pod
+    app.hud.onPromptSubmit('Investigate crash in payment service', null, null);
+
+    // Should resolve payment-service and focus it
+    expect(app.hud.selectedPod).toBeDefined();
+    expect(app.hud.selectedPod.name).toBe('payment-service');
+    expect(app.controls.selectedPod.name).toBe('payment-service');
+    expect(sentPrompt).toBeDefined();
+    expect(sentPrompt.id).toBe('pod-2');
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

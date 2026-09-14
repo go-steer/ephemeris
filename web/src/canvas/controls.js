@@ -35,9 +35,22 @@ export class CameraControls {
     this.controls = new OrbitControls(camera, renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.06;
-    this.controls.minDistance = 6;
-    this.controls.maxDistance = 220;
-    this.controls.maxPolarAngle = Math.PI / 2 + 0.1; // Don't flip below grid
+    this.controls.minDistance = 3;
+    this.controls.maxDistance = 240;
+    this.controls.maxPolarAngle = Math.PI / 2 + 0.05; // Don't flip below grid
+    this.controls.enablePan = true;
+    this.controls.screenSpacePanning = true; // Essential: allows left/right and up/down dragging across camera plane
+    this.controls.panSpeed = 1.2;
+
+    // Enable keyboard panning (WASD / arrow keys)
+    if (typeof window !== 'undefined') {
+      this.controls.listenToKeyEvents(window);
+    }
+
+    // Cancel automatic transitions immediately if user manually interacts with camera
+    this.controls.addEventListener('start', () => {
+      this.isTransitioning = false;
+    });
 
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
@@ -46,6 +59,9 @@ export class CameraControls {
     this.selectedPod = null;
     this.selectedMesh = null;
 
+    // Navigation mode: 'orbit' (rotate) or 'pan' (translate focus)
+    this.navMode = 'orbit';
+
     // Smooth camera transition state
     this.isTransitioning = false;
     this.targetCameraPos = new THREE.Vector3();
@@ -53,7 +69,7 @@ export class CameraControls {
     this.transitionLerp = 0.08;
 
     // Default overview position
-    this.defaultCameraPos = new THREE.Vector3(0, 42, 68);
+    this.defaultCameraPos = new THREE.Vector3(0, 34, 52);
     this.defaultLookAt = new THREE.Vector3(0, 0, 0);
 
     // Visual targeting reticle
@@ -65,35 +81,42 @@ export class CameraControls {
     // Bound event handlers
     this._onPointerMove = this._onPointerMove.bind(this);
     this._onPointerDown = this._onPointerDown.bind(this);
+    this._onKeyDown = this._onKeyDown.bind(this);
+    this._onKeyUp = this._onKeyUp.bind(this);
 
     this.domElement = renderer.domElement;
     this.domElement.addEventListener('pointermove', this._onPointerMove);
     this.domElement.addEventListener('pointerdown', this._onPointerDown);
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', this._onKeyDown);
+      window.addEventListener('keyup', this._onKeyUp);
+    }
   }
 
   _createReticle() {
     this.reticleGroup = new THREE.Group();
     this.reticleGroup.visible = false;
 
-    // Outer rotating targeting ring
-    const ringGeo = new THREE.RingGeometry(2.4, 2.7, 32);
+    // Outer rotating targeting ring (proportional to compact node scale)
+    const ringGeo = new THREE.RingGeometry(1.2, 1.4, 32);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0x00e5ff,
+      color: 0x4285f4, // Google Blue
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.9,
     });
     this.reticleRing = new THREE.Mesh(ringGeo, ringMat);
     this.reticleRing.rotation.x = Math.PI / 2;
     this.reticleGroup.add(this.reticleRing);
 
     // Inner dashed indicator
-    const innerRingGeo = new THREE.RingGeometry(2.9, 3.0, 16);
+    const innerRingGeo = new THREE.RingGeometry(1.5, 1.6, 16);
     const innerRingMat = new THREE.MeshBasicMaterial({
-      color: 0xff0055,
+      color: 0xea4335, // Google Red
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.7,
       wireframe: true,
     });
     this.reticleInner = new THREE.Mesh(innerRingGeo, innerRingMat);
@@ -101,6 +124,38 @@ export class CameraControls {
     this.reticleGroup.add(this.reticleInner);
 
     this.scene.add(this.reticleGroup);
+  }
+
+  /**
+   * Set camera navigation mode: 'orbit' (default rotate) or 'pan' (drag to move focus).
+   * @param {'orbit'|'pan'} mode
+   */
+  setNavMode(mode) {
+    this.navMode = mode;
+    if (mode === 'pan') {
+      this.controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
+      this.domElement.style.cursor = 'grab';
+    } else {
+      this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+      this.domElement.style.cursor = 'default';
+    }
+  }
+
+  _onKeyDown(e) {
+    // Hold Shift or Space to temporarily drag-pan with left mouse
+    if (e.key === 'Shift' || e.code === 'Space') {
+      this.controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
+      this.domElement.style.cursor = 'grab';
+    }
+  }
+
+  _onKeyUp(e) {
+    if (e.key === 'Shift' || e.code === 'Space') {
+      if (this.navMode !== 'pan') {
+        this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+        this.domElement.style.cursor = 'default';
+      }
+    }
   }
 
   _getPointerCoords(e) {
@@ -145,7 +200,9 @@ export class CameraControls {
   }
 
   _onPointerDown(e) {
-    // Only handle primary left click
+    // If in pan mode, or holding modifier keys, allow drag-panning without selecting
+    if (this.navMode === 'pan' || e.shiftKey || e.button === 2) return;
+    // Only handle primary left click for node selection
     if (e.button !== 0) return;
 
     const coords = this._getPointerCoords(e);
@@ -181,12 +238,13 @@ export class CameraControls {
     this.reticleGroup.position.copy(mesh.position);
     this.reticleGroup.visible = true;
 
-    // Set smooth camera transition target
+    // Set smooth camera transition target cleanly centered on pod
     const meshPos = mesh.position.clone();
     this.targetLookAt.copy(meshPos);
+    this.targetLookAt.y += 0.4;
 
-    // Offset camera slightly elevated and back from pod
-    const offset = new THREE.Vector3(7, 5, 9);
+    // Offset camera with comfortable isometric framing (no clipping into mesh)
+    const offset = new THREE.Vector3(5.5, 4.0, 7.0);
     this.targetCameraPos.copy(meshPos).add(offset);
     this.isTransitioning = true;
 
@@ -218,7 +276,7 @@ export class CameraControls {
     if (!clusterPos) return;
     this.reticleGroup.visible = false;
     this.targetLookAt.copy(clusterPos);
-    this.targetCameraPos.set(clusterPos.x, clusterPos.y + 42, clusterPos.z + 58);
+    this.targetCameraPos.set(clusterPos.x, clusterPos.y + 20, clusterPos.z + 28);
     this.isTransitioning = true;
   }
 
@@ -254,6 +312,10 @@ export class CameraControls {
   destroy() {
     this.domElement.removeEventListener('pointermove', this._onPointerMove);
     this.domElement.removeEventListener('pointerdown', this._onPointerDown);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', this._onKeyDown);
+      window.removeEventListener('keyup', this._onKeyUp);
+    }
     this.controls.dispose();
   }
 }

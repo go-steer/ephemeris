@@ -56,13 +56,16 @@ describe('TopologyMesh', () => {
     ],
   };
 
+  let activeTopology;
+
   beforeEach(() => {
     scene = new THREE.Scene();
     topology = new TopologyMesh(scene);
+    activeTopology = JSON.parse(JSON.stringify(mockTopology));
   });
 
   it('builds cluster core, namespaces, and pod meshes', () => {
-    topology.build(mockTopology);
+    topology.build(activeTopology);
 
     const interactive = topology.getInteractiveObjects();
     expect(interactive.length).toBe(3);
@@ -80,13 +83,13 @@ describe('TopologyMesh', () => {
   });
 
   it('updates animation loop without errors', () => {
-    topology.build(mockTopology);
+    topology.build(activeTopology);
     expect(() => topology.update(1000)).not.toThrow();
     expect(() => topology.update(2000)).not.toThrow();
   });
 
   it('clears all meshes and resets state', () => {
-    topology.build(mockTopology);
+    topology.build(activeTopology);
     expect(topology.getInteractiveObjects().length).toBe(3);
 
     topology.clear();
@@ -119,12 +122,28 @@ describe('TopologyMesh', () => {
   });
 
   it('remediates a pod and updates status to Running', () => {
-    topology.build(mockTopology);
+    topology.build(activeTopology);
     const crashPod = topology.getInteractiveObjects().find((m) => m.userData.isCrashLoop);
     expect(crashPod).toBeDefined();
 
     topology.remediatePod('payment-service', 'Running');
     expect(crashPod.userData.isCrashLoop).toBe(false);
     expect(crashPod.userData.pod.status).toBe('Running');
+  });
+
+  it('uses compact architectural dimensions and standard Google/K8s status colors', () => {
+    topology.build(activeTopology);
+    const pods = topology.getInteractiveObjects();
+    const runningPod = pods.find((m) => m.userData.pod.name === 'frontend');
+    const crashPod = pods.find((m) => m.userData.pod.name === 'payment-service');
+
+    // Verify compact scale (chassis size 1.2 x 1.4 x 1.2)
+    expect(runningPod.geometry.parameters.width).toBe(1.2);
+    expect(runningPod.geometry.parameters.height).toBe(1.4);
+    expect(runningPod.geometry.parameters.depth).toBe(1.2);
+
+    // Verify authentic Google/K8s status colors: Green 0x34a853 and Red 0xea4335
+    expect(runningPod.userData.baseColor).toBe(0x34a853);
+    expect(crashPod.userData.baseColor).toBe(0xea4335);
   });
 });

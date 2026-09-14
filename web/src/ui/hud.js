@@ -61,6 +61,10 @@ export class HUDOverlay {
         </div>
 
         <div class="header-actions">
+          <div class="camera-mode-toggle" id="hud-camera-toggle">
+            <button class="mode-btn active" id="hud-btn-mode-orbit" title="Orbit (Rotate) around cluster or target">🔄 Orbit</button>
+            <button class="mode-btn" id="hud-btn-mode-pan" title="Pan (Move) camera focus left/right, up/down (or hold Shift / Space)">✋ Pan</button>
+          </div>
           <button class="hud-btn" id="hud-reset-view-btn" title="Reset 3D Camera Overview">&#x2299; Overview</button>
           <span class="connection-status connected" id="hud-conn-status">LIVE</span>
         </div>
@@ -70,7 +74,7 @@ export class HUDOverlay {
         <div class="target-context-strip" id="hud-context-strip">
           <span class="context-label">TARGET CONTEXT:</span>
           <span class="context-pod-badge" id="hud-target-badge">None</span>
-          <span class="context-uri" id="hud-target-uri">Click any pod in the 3D topology to inspect</span>
+          <span class="context-uri" id="hud-target-uri">Click any pod in the 3D topology or enter a prompt to inspect</span>
         </div>
 
         <div class="triage-prompt-row">
@@ -102,7 +106,7 @@ export class HUDOverlay {
 
         <div class="status-notification-line" id="hud-status-line">
           <span class="status-dot"></span>
-          <span class="status-msg" id="hud-status-msg">Spatial mesh ready. Select a resource to begin triage.</span>
+          <span class="status-msg" id="hud-status-msg">Spatial mesh ready. Select a resource or submit a prompt to begin triage.</span>
         </div>
       </footer>
     `;
@@ -115,14 +119,24 @@ export class HUDOverlay {
     const investBtn = this.container.querySelector('#hud-investigate-btn');
     const resetBtn = this.container.querySelector('#hud-reset-view-btn');
     const clusterSelect = this.container.querySelector('#hud-cluster-select');
+    const btnOrbit = this.container.querySelector('#hud-btn-mode-orbit');
+    const btnPan = this.container.querySelector('#hud-btn-mode-pan');
+
+    btnOrbit?.addEventListener('click', () => {
+      btnOrbit.classList.add('active');
+      btnPan?.classList.remove('active');
+      if (this.onCameraModeChange) this.onCameraModeChange('orbit');
+    });
+
+    btnPan?.addEventListener('click', () => {
+      btnPan.classList.add('active');
+      btnOrbit?.classList.remove('active');
+      if (this.onCameraModeChange) this.onCameraModeChange('pan');
+    });
 
     const submitPrompt = (customText) => {
       const text = customText !== undefined ? customText : input.value.trim();
       if (!text) return;
-      if (!this.selectedPod) {
-        this.setStatusMessage('Please click a pod in the 3D topology first', false);
-        return;
-      }
       if (this.onPromptSubmit) {
         this.onPromptSubmit(text, this.selectedPod, this.selectedMeta);
       }
