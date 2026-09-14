@@ -16,48 +16,62 @@
 package main
 
 import (
+	"context"
 	"flag"
-	"fmt"
 	"log"
-	"net/http"
-	"time"
 
 	"github.com/go-steer/ephemeris/internal/webui"
+	"github.com/go-steer/ephemeris/pkg/gke"
+	"github.com/go-steer/ephemeris/pkg/orchestrator"
+	"github.com/go-steer/ephemeris/pkg/telemetry"
 )
 
 func main() {
 	port := flag.Int("port", 8080, "HTTP and WebSocket listen port")
-	mode := flag.String("mode", "mock", "Operational mode (mock or live)")
+	mode := flag.String("mode", "mock", "Operational mode: 'mock' or 'live'")
 	webDir := flag.String("web-dir", "", "Serve web assets from directory instead of embedded bundle")
+	gcpProject := flag.String("gcp-project", orchestrator.GetEnvOrDefault("GOOGLE_CLOUD_PROJECT", ""), "GCP Project ID")
+	vertexLocation := flag.String("vertex-location", orchestrator.GetEnvOrDefault("VERTEX_LOCATION", "global"), "Vertex AI Location (default: global)")
+	model := flag.String("model", orchestrator.GetEnvOrDefault("GEMINI_MODEL", "gemini-3.8-flash"), "Gemini model identifier")
 	flag.Parse()
 
-	log.Printf("Starting ephemeris (mode: %s, port: %d)...", *mode, *port)
+	log.Printf("Starting ephemeris daemon [mode=%s, port=%d, model=%s, location=%s]", *mode, *port, *model, *vertexLocation)
 
-	mux := http.NewServeMux()
+	ctx := context.Background()
 
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintln(w, "ok")
+	// 1. Initialize providers
+	var gkeProvider gke.Provider
+	var telemProvider telemetry.Provider
+
+	// Default to mock for Phase 1
+	gkeProvider = gke.NewMockProvider()
+	telemProvider = telemetry.NewMockProvider()
+
+	// 2. Initialize Vertex AI Agent
+	forceMock := (*mode == "mock")
+	agent := orchestrator.NewAgent(ctx, orchestrator.AgentConfig{
+		Model:     *model,
+		Location:  *vertexLocation,
+		ProjectID: *gcpProject,
+		ForceMock: forceMock,
 	})
 
-	if *webDir != "" {
-		log.Printf("Serving static assets from disk: %s", *webDir)
-		mux.Handle("/", http.FileServer(http.Dir(*webDir)))
-	} else {
-		spaFS, err := webui.FS()
-		if err != nil {
-			log.Fatalf("Failed to load embedded webui: %v", err)
-		}
-		mux.Handle("/", http.FileServer(http.FS(spaFS)))
+	// 3. Configure Server
+	spaFS, err := webui.FS()
+	if err != nil {
+		log.Printf("Warning: failed to load embedded FS (%v)", err)
 	}
 
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", *port),
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+	serverCfg := orchestrator.ServerConfig{
+		Port:          *port,
+		WebDir:        *webDir,
+		SPAFileSystem: spaFS,
 	}
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Server exited: %v", err)
+	server := orchestrator.NewServer(serverCfg, gkeProvider, telemProvider, agent)
+
+	// 4. Start Server
+	if err := server.Start(); err != nil {
+		log.Fatalf("Server stopped: %v", err)
 	}
 }
