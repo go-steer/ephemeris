@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Automated end-to-end test verifying:
+# 1. Daemon startup in mock mode.
+# 2. HTTP root serving and asset embedding.
+# 3. Favicon 204 response.
+# 4. WebSocket connection, topology discovery, prompt triage, and ArrowJS UI execution.
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+ensure_node_deps
+
+PORT=18099
+
+# Build binary
+echo "▸ building binary for e2e test..."
+go build -o bin/ephemeris-e2e ./cmd/ephemeris
+
+# Launch server
+./bin/ephemeris-e2e -mode=mock -port="$PORT" &
+SERVER_PID=$!
+
+cleanup() {
+  if kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  rm -f bin/ephemeris-e2e
+}
+trap cleanup EXIT
+
+# Wait for server to become healthy
+echo "▸ waiting for server on :$PORT..."
+for i in {1..30}; do
+  if curl -sf "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+
+# 1. Test HTTP root
+echo "▸ testing HTTP root..."
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/")
+if [[ "$HTTP_STATUS" != "200" ]]; then
+  echo "Error: expected HTTP 200 from /, got $HTTP_STATUS" >&2
+  exit 1
+fi
+
+# 2. Test Favicon
+echo "▸ testing /favicon.ico..."
+FAV_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/favicon.ico")
+if [[ "$FAV_STATUS" != "204" ]]; then
+  echo "Error: expected HTTP 204 from /favicon.ico, got $FAV_STATUS" >&2
+  exit 1
+fi
+
+# 3. Test WebSocket + ArrowJS Sandbox execution
+echo "▸ testing WebSocket protocol and ArrowJS sandbox execution..."
+node --input-type=module <<EOF
+import WebSocket from 'ws';
+import { html, reactive } from '@arrow-js/core';
+import { JSDOM } from 'jsdom';
+
+const dom = new JSDOM('<!DOCTYPE html><html><body><div id="mount"></div></body></html>');
+global.document = dom.window.document;
+global.window = dom.window;
+
+const container = document.getElementById('mount');
+const ws = new WebSocket('ws://localhost:$PORT/ws');
+
+ws.on('open', () => {
+  ws.send(JSON.stringify({ type: 'init' }));
+});
+
+ws.on('message', async (rawData) => {
+  const msg = JSON.parse(rawData.toString());
+
+  if (msg.type === 'topology') {
+    if (!msg.topology?.clusters?.length) {
+      console.error('E2E Failure: empty clusters in topology');
+      process.exit(1);
+    }
+    // Select crashing payment-service pod and send incident prompt
+    ws.send(JSON.stringify({
+      type: 'select_node',
+      selected_node_id: 'pod-payment-service-84f7b6',
+      resource_uri: 'gke://production/payment-service-84f7b6'
+    }));
+    ws.send(JSON.stringify({
+      type: 'prompt',
+      selected_node_id: 'pod-payment-service-84f7b6',
+      resource_uri: 'gke://production/payment-service-84f7b6',
+      prompt: 'Why is this crashing?'
+    }));
+  } else if (msg.type === 'ui_component') {
+    const ui = msg.ui || msg;
+    const code = ui.code;
+    const telemetry = ui.telemetry;
+
+    if (!code || !telemetry) {
+      console.error('E2E Failure: missing code or telemetry in ui_component');
+      process.exit(1);
+    }
+
+    try {
+      const sandboxFn = new Function(
+        'html', 'reactive', 'data', 'container',
+        'window', 'document', 'localStorage', 'sessionStorage',
+        'fetch', 'XMLHttpRequest', 'WebSocket', 'alert', 'prompt',
+        'confirm', 'navigator', 'location',
+        '"use strict";\n' + code
+      );
+      sandboxFn(
+        html, reactive, telemetry, container,
+        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined
+      );
+
+      // Verify DOM mounted
+      const widget = container.querySelector('.ephemeris-widget');
+      if (!widget) {
+        throw new Error('Missing .ephemeris-widget in mounted container');
+      }
+
+      const initialRows = container.querySelectorAll('.log-row');
+      if (initialRows.length === 0) {
+        throw new Error('Expected log rows in mounted widget');
+      }
+
+      // Test click reactive filter
+      const fatalBtn = container.querySelector('.btn.fatal') || container.querySelector('#btn-fatal');
+      if (fatalBtn) {
+        fatalBtn.click();
+        await new Promise(r => setTimeout(r, 20));
+        const fatalRows = container.querySelectorAll('.log-row');
+        if (fatalRows.length === 0) {
+          throw new Error('Expected fatal log rows after clicking filter');
+        }
+      }
+
+      console.log('✔ E2E test passed: WebSocket round-trip, UI compilation, and reactive DOM verified.');
+      ws.close();
+      process.exit(0);
+    } catch (err) {
+      console.error('E2E ArrowJS Execution Failed:', err);
+      process.exit(1);
+    }
+  }
+});
+
+ws.on('error', (err) => {
+  console.error('WS Error:', err);
+  process.exit(1);
+});
+
+setTimeout(() => {
+  console.error('E2E Timeout: did not receive ui_component within 10s');
+  process.exit(1);
+}, 10000);
+EOF
+
+echo "✓ e2e test completed successfully"

@@ -130,7 +130,7 @@ func (a *Agent) generateFallback(_ string, _ *api.TelemetryData) string {
   <div class="ephemeris-widget">
     <div class="widget-header">
       <div class="title-group">
-        <span class="badge status-${(data.metrics.status || 'running').toLowerCase()}">${data.metrics.status || 'Running'}</span>
+        <span class="${'badge status-' + ((data.metrics && data.metrics.status) || 'running').toLowerCase()}">${(data.metrics && data.metrics.status) || 'Running'}</span>
         <span class="resource-title">${data.pod_id || 'Pod'}</span>
       </div>
       <div class="stats-group">
@@ -163,7 +163,7 @@ func (a *Agent) generateFallback(_ string, _ *api.TelemetryData) string {
           return html` + b + `<div class="empty-state">No log entries match the selected filter.</div>` + b + `;
         }
         return filtered.map(log => html` + b + `
-          <div class="log-row ${log.severity.toLowerCase()} ${() => state.selectedLog === log ? 'selected' : ''}" @click="${() => { state.selectedLog = (state.selectedLog === log ? null : log); }}">
+          <div class="${() => 'log-row ' + log.severity.toLowerCase() + (state.selectedLog === log ? ' selected' : '')}" @click="${() => { state.selectedLog = (state.selectedLog === log ? null : log); }}">
             <span class="log-time">${log.timestamp.substring(11, 23)}</span>
             <span class="log-sev">[${log.severity}]</span>
             <span class="log-msg">${log.message}</span>

@@ -87,4 +87,88 @@ describe('ArrowSandboxRuntime', () => {
     runtime.clear();
     expect(hostEl.shadowRoot.querySelector('.sandbox-mount').children.length).toBe(0);
   });
+
+  it('mounts full reactive incident triage widget without Invalid HTML position errors', async () => {
+    const code = `
+      const state = reactive({
+        filter: 'ALL',
+        search: '',
+        selectedLog: null,
+        logs: data.logs || []
+      });
+
+      function getFilteredLogs() {
+        return state.logs.filter(log => {
+          const matchesFilter = state.filter === 'ALL' || log.severity === state.filter;
+          const matchesSearch = !state.search || log.message.toLowerCase().includes(state.search.toLowerCase());
+          return matchesFilter && matchesSearch;
+        });
+      }
+
+      const template = html\`
+        <div class="ephemeris-widget">
+          <div class="widget-header">
+            <span class="\${'badge status-' + ((data.metrics && data.metrics.status) || 'running').toLowerCase()}">\${(data.metrics && data.metrics.status) || 'Running'}</span>
+            <span class="resource-title">\${data.pod_id || 'Pod'}</span>
+          </div>
+          <div class="filter-bar">
+            <button class="\${() => state.filter === 'ALL' ? 'btn active' : 'btn'}" id="btn-all" @click="\${() => { state.filter = 'ALL'; }}">ALL</button>
+            <button class="\${() => state.filter === 'FATAL' ? 'btn active fatal' : 'btn'}" id="btn-fatal" @click="\${() => { state.filter = 'FATAL'; }}">FATAL</button>
+            <input class="search-input" id="search-input" @input="\${(e) => { state.search = e.target.value; }}" />
+          </div>
+          <div class="log-container">
+            \${() => {
+              const filtered = getFilteredLogs();
+              return filtered.map(log => html\`
+                <div class="\${() => 'log-row ' + log.severity.toLowerCase()}">
+                  <span class="log-sev">[\${log.severity}]</span>
+                  <span class="log-msg">\${log.message}</span>
+                </div>
+              \`);
+            }}
+          </div>
+        </div>
+      \`;
+
+      template(container);
+    `;
+
+    const telemetry = {
+      pod_id: 'payment-service-84f7b6',
+      metrics: { status: 'CrashLoopBackOff', restarts: '42' },
+      logs: [
+        {
+          timestamp: '2026-09-14T10:00:00.123Z',
+          severity: 'FATAL',
+          message: 'panic: nil pointer dereference',
+        },
+        {
+          timestamp: '2026-09-14T10:00:01.456Z',
+          severity: 'INFO',
+          message: 'server listening on port 8080',
+        },
+      ],
+    };
+
+    const result = runtime.execute(code, telemetry);
+    expect(result.success).toBe(true);
+
+    const badge = hostEl.shadowRoot.querySelector('.badge');
+    expect(badge).not.toBeNull();
+    expect(badge.textContent).toBe('CrashLoopBackOff');
+    expect(badge.className).toBe('badge status-crashloopbackoff');
+
+    const rows = hostEl.shadowRoot.querySelectorAll('.log-row');
+    expect(rows.length).toBe(2);
+
+    // Test reactive filtering on click
+    const fatalBtn = hostEl.shadowRoot.querySelector('#btn-fatal');
+    fatalBtn.click();
+
+    // Allow ArrowJS reactive tick
+    await new Promise((r) => setTimeout(r, 20));
+    const filteredRows = hostEl.shadowRoot.querySelectorAll('.log-row');
+    expect(filteredRows.length).toBe(1);
+    expect(filteredRows[0].querySelector('.log-msg').textContent).toContain('panic: nil pointer');
+  });
 });

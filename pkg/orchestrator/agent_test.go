@@ -16,6 +16,7 @@ package orchestrator
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -48,6 +49,17 @@ func TestAgent_GenerateFallback(t *testing.T) {
 	}
 	if !strings.Contains(code, "template(container)") {
 		t.Errorf("expected generated code to mount to container")
+	}
+
+	// Verify no partial attribute interpolation (e.g. class="...${...") which triggers ArrowJS "Invalid HTML position"
+	reAttr := regexp.MustCompile(`[a-zA-Z0-9_\-]+="([^"]*)"`)
+	for _, match := range reAttr.FindAllStringSubmatch(code, -1) {
+		val := match[1]
+		if strings.Contains(val, "${") {
+			if !strings.HasPrefix(val, "${") || !strings.HasSuffix(val, "}") || strings.Count(val, "${") > 1 {
+				t.Errorf("found forbidden partial attribute interpolation in %q: %q (causes ArrowJS 'Invalid HTML position')", match[0], val)
+			}
+		}
 	}
 }
 

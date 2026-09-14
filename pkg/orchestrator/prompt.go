@@ -37,7 +37,8 @@ func BuildSystemPrompt() string {
 		"5. You MUST mount the template: template(container);\n" +
 		"6. The component must be an interactive SRE panel highlighting stack traces, fatal errors, and metric badges.\n" +
 		"7. Use reactive event handlers like @click=\"${() => { state.filter = 'FATAL'; }}\" to filter logs.\n" +
-		"8. Style elements with semantic CSS classes: .ephemeris-widget, .widget-header, .log-row, .sev-fatal, .sev-error, .sev-warning, .badge-crashloop, .metric-item.\n"
+		"8. Style elements with semantic CSS classes: .ephemeris-widget, .widget-header, .log-row, .sev-fatal, .sev-error, .sev-warning, .badge-crashloop, .metric-item.\n" +
+		"9. STRICT ARROWJS SYNTAX: Never place expressions inside HTML attribute quotes alongside other text (e.g. NEVER class=\"badge ${color}\" - this causes 'Invalid HTML position' error). Any attribute with an expression MUST be the entire attribute value: class=\"${'badge ' + color}\" or class=\"${() => 'badge ' + color}\".\n"
 }
 
 // BuildUserPrompt packages the SRE prompt, active resource context, and telemetry data.
