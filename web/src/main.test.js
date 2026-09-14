@@ -17,11 +17,22 @@ import { initializeApp } from './main.js';
 
 describe('initializeApp', () => {
   beforeEach(() => {
-    document.body.innerHTML = '<div id="app"></div>';
+    document.body.innerHTML = `
+      <div id="app">
+        <div id="canvas-container"></div>
+        <div id="hud-container"></div>
+        <div id="panel-container"></div>
+      </div>
+    `;
   });
 
-  it('returns true when container exists', () => {
-    expect(initializeApp()).toBe(true);
+  it('initializes successfully when containers exist', () => {
+    const app = initializeApp();
+    expect(app).toBeTruthy();
+    expect(app.sceneManager).toBeDefined();
+    expect(app.hud).toBeDefined();
+    expect(app.panel).toBeDefined();
+    expect(app.ws).toBeDefined();
   });
 
   it('returns false when container is missing', () => {
