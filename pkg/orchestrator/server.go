@@ -83,6 +83,11 @@ func (s *Server) Routes() http.Handler {
 		_, _ = fmt.Fprintln(w, "ok")
 	})
 
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/x-icon")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
 	// Serve frontend assets

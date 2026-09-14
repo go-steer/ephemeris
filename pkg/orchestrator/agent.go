@@ -172,7 +172,7 @@ func (a *Agent) generateFallback(_ string, _ *api.TelemetryData) string {
       }}
     </div>
   </div>
-` + b + `;\n\ntemplate(container);\n`
+` + b + ";\n\ntemplate(container);\n"
 }
 
 // GetEnvOrDefault is a helper to read configuration from environment.

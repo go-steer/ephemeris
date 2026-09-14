@@ -342,6 +342,20 @@ export class ArrowSandboxRuntime {
     this.container.innerHTML = '';
 
     try {
+      let sanitizedCode = (code || '').trim();
+
+      // Strip markdown code fences if model enclosed response in them
+      if (sanitizedCode.startsWith('```')) {
+        sanitizedCode = sanitizedCode
+          .replace(/^```(?:javascript|js)?\s*\n?/i, '')
+          .replace(/\n?```\s*$/, '');
+      }
+
+      // If template(container) was omitted, auto-mount if template is defined
+      if (!sanitizedCode.includes('(container)') && sanitizedCode.includes('template')) {
+        sanitizedCode += '\nif (typeof template === "function") { template(container); }';
+      }
+
       // Build safe execution function with browser globals shadowed to undefined
       const sandboxFn = new Function(
         'html',
@@ -360,7 +374,7 @@ export class ArrowSandboxRuntime {
         'confirm',
         'navigator',
         'location',
-        `"use strict";\n${code}`
+        `"use strict";\n${sanitizedCode}`
       );
 
       // Execute safely
