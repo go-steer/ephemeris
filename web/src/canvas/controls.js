@@ -211,6 +211,18 @@ export class CameraControls {
   }
 
   /**
+   * Focus camera smoothly on a cluster platform.
+   * @param {THREE.Vector3} clusterPos
+   */
+  focusOnCluster(clusterPos) {
+    if (!clusterPos) return;
+    this.reticleGroup.visible = false;
+    this.targetLookAt.copy(clusterPos);
+    this.targetCameraPos.set(clusterPos.x, clusterPos.y + 42, clusterPos.z + 58);
+    this.isTransitioning = true;
+  }
+
+  /**
    * Called every frame from scene render loop.
    * @param {number} time
    */

@@ -27,7 +27,9 @@ export class HUDOverlay {
 
     // Callbacks
     this.onPromptSubmit = null;
+    this.onPromptSubmit = null;
     this.onResetView = null;
+    this.onClusterSelect = null;
 
     this._createDOM();
   }
@@ -45,7 +47,12 @@ export class HUDOverlay {
         </div>
 
         <div class="cluster-summary">
-          <span class="cluster-name" id="hud-cluster-name">production-cluster [us-central1]</span>
+          <div class="cluster-select-wrapper">
+            <span class="cluster-select-icon">&#x1F310;</span>
+            <select id="hud-cluster-select" class="cluster-select-dropdown" aria-label="Select GKE Cluster">
+              <option value="production-us-central1">production-us-central1 [us-central1] (1 Alert)</option>
+            </select>
+          </div>
           <div class="stats-counters">
             <span class="stat-badge running" id="hud-stat-running">&bull; 0 Running</span>
             <span class="stat-badge crash" id="hud-stat-crash">&#x2715; 0 Crashing</span>
@@ -54,7 +61,7 @@ export class HUDOverlay {
         </div>
 
         <div class="header-actions">
-          <button class="hud-btn" id="hud-reset-view-btn" title="Reset 3D Camera">&#x2299; Overview</button>
+          <button class="hud-btn" id="hud-reset-view-btn" title="Reset 3D Camera Overview">&#x2299; Overview</button>
           <span class="connection-status connected" id="hud-conn-status">LIVE</span>
         </div>
       </header>
@@ -73,22 +80,24 @@ export class HUDOverlay {
               type="text"
               id="hud-prompt-input"
               class="prompt-input"
-              placeholder="Ask Gemini: e.g. Why is this crashing? Highlight fatal errors..."
+              placeholder="Ask Gemini or press [⏎ Enter] to run incident triage on payment-service..."
               autocomplete="off"
             />
           </div>
-          <button class="investigate-btn" id="hud-investigate-btn">
-            <span class="btn-text">Investigate</span>
+          <button class="investigate-btn" id="hud-investigate-btn" title="Run AI Incident Triage (Enter)">
+            <span class="btn-icon">⚡</span>
+            <span class="btn-text">Run AI Triage</span>
+            <kbd class="btn-kbd">⏎ Enter</kbd>
             <span class="spinner" id="hud-spinner"></span>
           </button>
         </div>
 
         <div class="quick-chips-row">
-          <span class="chips-label">Quick Triage:</span>
-          <button class="chip-btn" data-prompt="Why is this crashing? Highlight the fatal errors.">Why is this crashing?</button>
-          <button class="chip-btn" data-prompt="Show FATAL stack traces and panic root cause.">Show fatal stack traces</button>
-          <button class="chip-btn" data-prompt="Analyze memory pressure, OOM events, and resource limits.">Analyze OOM pressure</button>
-          <button class="chip-btn" data-prompt="Summarize recent restart events and termination reasons.">Summarize restart events</button>
+          <span class="chips-label">Quick Actions:</span>
+          <button class="chip-btn" data-prompt="Triage incident, identify panic root cause, and execute 1-click rollback.">⚡ 1-Click Triage & Fix</button>
+          <button class="chip-btn" data-prompt="Analyze stack trace, uninitialized DB pool references, and panic origin.">🔍 Root Cause Analysis</button>
+          <button class="chip-btn" data-prompt="Evaluate upstream checkout-service blast radius and HTTP 500 error rates.">💥 Evaluate Blast Radius</button>
+          <button class="chip-btn" data-prompt="Analyze memory pressure, OOM events, and container resource limits.">📦 Memory & OOM Pressure</button>
         </div>
 
         <div class="status-notification-line" id="hud-status-line">
@@ -105,6 +114,7 @@ export class HUDOverlay {
     const input = this.container.querySelector('#hud-prompt-input');
     const investBtn = this.container.querySelector('#hud-investigate-btn');
     const resetBtn = this.container.querySelector('#hud-reset-view-btn');
+    const clusterSelect = this.container.querySelector('#hud-cluster-select');
 
     const submitPrompt = (customText) => {
       const text = customText !== undefined ? customText : input.value.trim();
@@ -131,6 +141,14 @@ export class HUDOverlay {
       if (this.onResetView) this.onResetView();
     });
 
+    if (clusterSelect) {
+      clusterSelect.addEventListener('change', (e) => {
+        if (this.onClusterSelect) {
+          this.onClusterSelect(e.target.value);
+        }
+      });
+    }
+
     const chipBtns = this.container.querySelectorAll('.chip-btn');
     chipBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -138,6 +156,29 @@ export class HUDOverlay {
         input.value = query;
         submitPrompt(query);
       });
+    });
+  }
+
+  setClusters(clusters = [], activeClusterName = '') {
+    const select = this.container.querySelector('#hud-cluster-select');
+    if (!select || clusters.length === 0) return;
+
+    select.innerHTML = '';
+    clusters.forEach((c) => {
+      let alerts = 0;
+      (c.namespaces || []).forEach((ns) => {
+        (ns.pods || []).forEach((p) => {
+          if (p.status === 'CrashLoopBackOff' || p.status === 'Failed') alerts++;
+        });
+      });
+
+      const opt = document.createElement('option');
+      opt.value = c.name;
+      opt.textContent = `${c.name} [${c.location || 'global'}] ${alerts > 0 ? `(${alerts} Alert)` : '(Healthy)'}`;
+      if (c.name === activeClusterName) {
+        opt.selected = true;
+      }
+      select.appendChild(opt);
     });
   }
 

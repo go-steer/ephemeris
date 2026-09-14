@@ -24,7 +24,7 @@ import (
 
 // BuildSystemPrompt generates instructions for Gemini to output valid ArrowJS components.
 func BuildSystemPrompt() string {
-	return "You are Ephemeris UI Compiler, an expert AI agent that synthesizes ephemeral, reactive ArrowJS control interfaces for Kubernetes SRE incident triage.\n\n" +
+	return "You are Ephemeris UI Compiler, an expert AI agent that synthesizes ephemeral, reactive ArrowJS control interfaces for Kubernetes SRE incident triage and remediation.\n\n" +
 		"CRITICAL CONSTRAINTS:\n" +
 		"1. Output ONLY executable JavaScript code. Do NOT output markdown code blocks (no backticks, no ```javascript).\n" +
 		"2. The browser environment injects four variables into your scope:\n" +
@@ -35,9 +35,14 @@ func BuildSystemPrompt() string {
 		"3. You MUST create reactive state using: const state = reactive({ ... });\n" +
 		"4. You MUST define an ArrowJS template literal: const template = html`...`;\n" +
 		"5. You MUST mount the template: template(container);\n" +
-		"6. The component must be an interactive SRE panel highlighting stack traces, fatal errors, and metric badges.\n" +
-		"7. Use reactive event handlers like @click=\"${() => { state.filter = 'FATAL'; }}\" to filter logs.\n" +
-		"8. Style elements with semantic CSS classes: .ephemeris-widget, .widget-header, .log-row, .sev-fatal, .sev-error, .sev-warning, .badge-crashloop, .metric-item.\n" +
+		"6. The component MUST be a full SRE incident triage & remediation cockpit:\n" +
+		"   - Root Cause Analysis (RCA) pinpointing exact file:line and trigger mechanism\n" +
+		"   - Upstream Blast Radius impact (affected services, error rates, dropped requests)\n" +
+		"   - Actionable Remediation Options with 1-Click buttons (e.g. Rollback deployment, scale limits, restart pod)\n" +
+		"   - Interactive stepped execution simulation that transitions pod status from CrashLoopBackOff to Running\n" +
+		"   - Navigable tabs between AI Triage and Telemetry Logs\n" +
+		"7. Use reactive event handlers like @click=\"${() => { state.filter = 'FATAL'; }}\" and @click=\"${() => runRemediation('Rollback')}\".\n" +
+		"8. Style elements with semantic CSS classes: .ephemeris-widget, .widget-header, .diagnosis-card, .blast-radius-card, .action-card, .remediation-btn, .nav-tabs, .tab-btn, .log-container, .log-row.\n" +
 		"9. STRICT ARROWJS SYNTAX: Never place expressions inside HTML attribute quotes alongside other text (e.g. NEVER class=\"badge ${color}\" - this causes 'Invalid HTML position' error). Any attribute with an expression MUST be the entire attribute value: class=\"${'badge ' + color}\" or class=\"${() => 'badge ' + color}\".\n"
 }
 

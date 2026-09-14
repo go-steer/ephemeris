@@ -30,16 +30,26 @@ func TestMockProvider_GetTopology(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(topo.Clusters) != 1 {
-		t.Fatalf("expected 1 cluster, got %d", len(topo.Clusters))
+	if len(topo.Clusters) != 3 {
+		t.Fatalf("expected 3 clusters, got %d", len(topo.Clusters))
 	}
 
 	cluster := topo.Clusters[0]
-	if cluster.Name != "production-cluster" {
-		t.Errorf("expected production-cluster, got %s", cluster.Name)
+	if cluster.Name != "production-us-central1" {
+		t.Errorf("expected production-us-central1, got %s", cluster.Name)
 	}
 
-	// Verify namespaces
+	stagingCluster := topo.Clusters[1]
+	if stagingCluster.Name != "staging-us-east4" {
+		t.Errorf("expected staging-us-east4, got %s", stagingCluster.Name)
+	}
+
+	analyticsCluster := topo.Clusters[2]
+	if analyticsCluster.Name != "analytics-europe-west1" {
+		t.Errorf("expected analytics-europe-west1, got %s", analyticsCluster.Name)
+	}
+
+	// Verify namespaces in primary cluster
 	nsMap := make(map[string]api.NamespaceNode)
 	for _, ns := range cluster.Namespaces {
 		nsMap[ns.Name] = ns

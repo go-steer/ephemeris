@@ -66,6 +66,76 @@ export function initializeApp() {
     hud.setSelectedPod(null);
   };
 
+  let currentTopologyData = null;
+
+  // Wire Cluster Switcher -> Smooth 3D Navigation
+  hud.onClusterSelect = (clusterName) => {
+    if (!currentTopologyData || !currentTopologyData.clusters) return;
+
+    const cluster = currentTopologyData.clusters.find((c) => c.name === clusterName);
+    if (!cluster) return;
+
+    const pos = topologyMesh.getClusterPosition(clusterName);
+    if (pos) {
+      controls.focusOnCluster(pos);
+    }
+
+    let running = 0;
+    let crash = 0;
+    let pending = 0;
+    (cluster.namespaces || []).forEach((ns) => {
+      (ns.pods || []).forEach((p) => {
+        if (p.status === 'Running') running++;
+        else if (p.status === 'CrashLoopBackOff' || p.status === 'Failed') crash++;
+        else if (p.status === 'Pending') pending++;
+      });
+    });
+
+    hud.setPodStats(running, crash, pending);
+    hud.setStatusMessage(
+      `Viewing cluster ${cluster.name} [${cluster.location || 'global'}].`,
+      false
+    );
+  };
+
+  // Wire Live Remediation Event (dispatched from ArrowJS sandbox) -> 3D Mesh
+  const onRemediate = (e) => {
+    if (e.detail && e.detail.podId) {
+      const podId = e.detail.podId;
+      const newStatus = e.detail.status || 'Running';
+      topologyMesh.remediatePod(podId, newStatus);
+      if (panel.statusBadge) {
+        panel.statusBadge.textContent = newStatus;
+      }
+      hud.setStatusMessage(
+        `Remediation verified: ${podId} is now ${newStatus}. Spatial mesh updated.`,
+        false
+      );
+
+      // Update cluster stats
+      if (currentTopologyData && currentTopologyData.clusters) {
+        currentTopologyData.clusters.forEach((c) => {
+          (c.namespaces || []).forEach((ns) => {
+            (ns.pods || []).forEach((p) => {
+              if (p.name === podId || p.id === podId) {
+                p.status = newStatus;
+              }
+            });
+          });
+        });
+        const select = document.getElementById('hud-cluster-select');
+        const activeClusterName = select ? select.value : currentTopologyData.clusters[0]?.name;
+        hud.setClusters(currentTopologyData.clusters, activeClusterName);
+        if (activeClusterName) {
+          hud.onClusterSelect(activeClusterName);
+        }
+      }
+    }
+  };
+
+  document.addEventListener('ephemeris-remediated', onRemediate);
+  window.addEventListener('ephemeris-remediated', onRemediate);
+
   // 5. Wire Prompt Submission -> WebSocket & Latency Timer
   hud.onPromptSubmit = (promptText, pod, meta) => {
     promptStartTime = performance.now();
@@ -88,18 +158,20 @@ export function initializeApp() {
   };
 
   ws.onTopology = (topologyData) => {
+    currentTopologyData = topologyData;
     topologyMesh.build(topologyData);
 
     if (topologyData && topologyData.clusters && topologyData.clusters.length > 0) {
-      const cluster = topologyData.clusters[0];
-      hud.setClusterInfo(cluster.name, cluster.location || 'us-central1');
+      const clusters = topologyData.clusters;
+      const primaryCluster = clusters[0];
+      hud.setClusters(clusters, primaryCluster.name);
 
       let running = 0;
       let crash = 0;
       let pending = 0;
       let failingPodMesh = null;
 
-      (cluster.namespaces || []).forEach((ns) => {
+      (primaryCluster.namespaces || []).forEach((ns) => {
         (ns.pods || []).forEach((p) => {
           if (p.status === 'Running') running++;
           else if (p.status === 'CrashLoopBackOff' || p.status === 'Failed') {
@@ -110,7 +182,7 @@ export function initializeApp() {
 
       hud.setPodStats(running, crash, pending);
       hud.setStatusMessage(
-        `Topology synced: ${running} running, ${crash} crashing, ${pending} pending.`,
+        `Connected to ${clusters.length} GKE clusters: ${running} running, ${crash} crashing, ${pending} pending in primary.`,
         false
       );
 

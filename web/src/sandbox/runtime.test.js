@@ -171,4 +171,48 @@ describe('ArrowSandboxRuntime', () => {
     expect(filteredRows.length).toBe(1);
     expect(filteredRows[0].querySelector('.log-msg').textContent).toContain('panic: nil pointer');
   });
+
+  it('mounts and executes 1-click remediation simulation in triage view', async () => {
+    const code = `
+      const state = reactive({
+        status: 'CrashLoopBackOff',
+        remediated: false
+      });
+      function fix() {
+        state.status = 'Running';
+        state.remediated = true;
+        container.dispatchEvent(new CustomEvent('ephemeris-remediated', {
+          bubbles: true,
+          composed: true,
+          detail: { podId: 'payment-service', status: 'Running' }
+        }));
+      }
+      const template = html\`
+        <div class="ephemeris-widget">
+          <span class="\${() => 'badge status-' + state.status.toLowerCase()}">\${() => state.status}</span>
+          <button class="remediation-btn primary" id="btn-fix" @click="\${() => fix()}">Rollback</button>
+          \${() => state.remediated ? html\`<div class="remediation-success-banner">Fixed</div>\` : ''}
+        </div>
+      \`;
+      template(container);
+    `;
+
+    let eventFired = false;
+    hostEl.addEventListener('ephemeris-remediated', (e) => {
+      if (e.detail.status === 'Running') eventFired = true;
+    });
+
+    const result = runtime.execute(code, { pod_id: 'payment-service' });
+    expect(result.success).toBe(true);
+
+    const fixBtn = hostEl.shadowRoot.querySelector('#btn-fix');
+    expect(fixBtn).not.toBeNull();
+    fixBtn.click();
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(eventFired).toBe(true);
+    const badge = hostEl.shadowRoot.querySelector('.badge');
+    expect(badge.textContent).toBe('Running');
+    expect(hostEl.shadowRoot.querySelector('.remediation-success-banner')).not.toBeNull();
+  });
 });

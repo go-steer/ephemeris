@@ -87,10 +87,15 @@ ws.on('open', () => {
   ws.send(JSON.stringify({ type: 'init' }));
 });
 
+let promptSent = false;
+
 ws.on('message', async (rawData) => {
   const msg = JSON.parse(rawData.toString());
 
   if (msg.type === 'topology') {
+    if (promptSent) return;
+    promptSent = true;
+
     if (!msg.topology?.clusters?.length) {
       console.error('E2E Failure: empty clusters in topology');
       process.exit(1);
@@ -117,6 +122,8 @@ ws.on('message', async (rawData) => {
       process.exit(1);
     }
 
+    container.innerHTML = '';
+
     try {
       const sandboxFn = new Function(
         'html', 'reactive', 'data', 'container',
@@ -132,15 +139,23 @@ ws.on('message', async (rawData) => {
         undefined, undefined, undefined
       );
 
-      // Verify DOM mounted
-      const widget = container.querySelector('.ephemeris-widget');
-      if (!widget) {
-        throw new Error('Missing .ephemeris-widget in mounted container');
+      // Verify AI Root Cause & Remediation view
+      const diagnosisCard = container.querySelector('.diagnosis-card');
+      const remediationBtn = container.querySelector('.remediation-btn');
+      if (!diagnosisCard || !remediationBtn) {
+        throw new Error('Expected diagnosis-card and remediation-btn in mounted triage view');
+      }
+
+      // Switch to Telemetry Logs tab
+      const tabBtns = container.querySelectorAll('.tab-btn');
+      if (tabBtns.length >= 2) {
+        tabBtns[1].click();
+        await new Promise(r => setTimeout(r, 100));
       }
 
       const initialRows = container.querySelectorAll('.log-row');
       if (initialRows.length === 0) {
-        throw new Error('Expected log rows in mounted widget');
+        throw new Error('Expected log rows in mounted widget after opening logs tab');
       }
 
       // Test click reactive filter
@@ -154,7 +169,22 @@ ws.on('message', async (rawData) => {
         }
       }
 
-      console.log('✔ E2E test passed: WebSocket round-trip, UI compilation, and reactive DOM verified.');
+      // Switch back to Triage tab and test 1-click remediation
+      if (tabBtns.length >= 1) {
+        tabBtns[0].click();
+        await new Promise(r => setTimeout(r, 30));
+        const executeRollbackBtn = container.querySelector('.remediation-btn.primary');
+        if (executeRollbackBtn) {
+          executeRollbackBtn.click();
+          await new Promise(r => setTimeout(r, 50));
+          const inProgress = container.querySelector('.remediation-in-progress');
+          if (!inProgress) {
+            throw new Error('Expected remediation-in-progress state after clicking rollback');
+          }
+        }
+      }
+
+      console.log('✔ E2E test passed: WebSocket round-trip, UI compilation, RCA view, and reactive remediation verified.');
       ws.close();
       process.exit(0);
     } catch (err) {

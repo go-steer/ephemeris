@@ -93,4 +93,38 @@ describe('TopologyMesh', () => {
     expect(topology.getInteractiveObjects().length).toBe(0);
     expect(topology.group.children.length).toBe(0);
   });
+
+  it('supports multi-cluster topology layout and positions', () => {
+    const multiCluster = {
+      clusters: [
+        {
+          name: 'prod-cluster',
+          namespaces: [{ name: 'prod', pods: [{ name: 'api', status: 'Running' }] }],
+        },
+        {
+          name: 'stage-cluster',
+          namespaces: [{ name: 'stage', pods: [{ name: 'web', status: 'Running' }] }],
+        },
+      ],
+    };
+
+    topology.build(multiCluster);
+    expect(topology.getInteractiveObjects().length).toBe(2);
+
+    const prodPos = topology.getClusterPosition('prod-cluster');
+    const stagePos = topology.getClusterPosition('stage-cluster');
+    expect(prodPos).toBeDefined();
+    expect(stagePos).toBeDefined();
+    expect(prodPos.equals(stagePos)).toBe(false);
+  });
+
+  it('remediates a pod and updates status to Running', () => {
+    topology.build(mockTopology);
+    const crashPod = topology.getInteractiveObjects().find((m) => m.userData.isCrashLoop);
+    expect(crashPod).toBeDefined();
+
+    topology.remediatePod('payment-service', 'Running');
+    expect(crashPod.userData.isCrashLoop).toBe(false);
+    expect(crashPod.userData.pod.status).toBe('Running');
+  });
 });

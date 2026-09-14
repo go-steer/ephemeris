@@ -29,14 +29,14 @@ export class SceneManager {
     this.animationFrameId = null;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x07090e);
-    this.scene.fog = new THREE.FogExp2(0x07090e, 0.005);
+    this.scene.background = new THREE.Color(0x202124);
+    this.scene.fog = new THREE.FogExp2(0x202124, 0.0035);
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
 
     this.camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 1000);
-    this.camera.position.set(0, 42, 68);
+    this.camera.position.set(0, 48, 76);
 
     try {
       this.renderer = new THREE.WebGLRenderer({
@@ -47,7 +47,7 @@ export class SceneManager {
       this.renderer.setSize(width, height);
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.2;
+      this.renderer.toneMappingExposure = 1.15;
     } catch {
       // In headless or jsdom test environments without WebGL
       this.renderer = {
@@ -69,50 +69,50 @@ export class SceneManager {
   }
 
   _setupLighting() {
-    // Ambient light for base visibility
-    const ambient = new THREE.AmbientLight(0x162032, 2.5);
+    // Ambient light for base visibility across Google Cloud material surfaces
+    const ambient = new THREE.AmbientLight(0xe8eaed, 1.8);
     this.scene.add(ambient);
 
-    // Directional sunlight for edge highlights
-    const dirLight = new THREE.DirectionalLight(0xa5c9eb, 2.0);
-    dirLight.position.set(30, 60, 40);
+    // Directional key light for crisp architectural shadows and highlights
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
+    dirLight.position.set(40, 70, 50);
     this.scene.add(dirLight);
 
-    // Core point light with cyan tint
-    const coreLight = new THREE.PointLight(0x00e5ff, 3.0, 120);
-    coreLight.position.set(0, 0, 0);
-    this.scene.add(coreLight);
+    // Cool secondary fill light
+    const fillLight = new THREE.DirectionalLight(0x8ab4f8, 1.2);
+    fillLight.position.set(-50, 30, -40);
+    this.scene.add(fillLight);
 
-    // Secondary rim light
-    const rimLight = new THREE.DirectionalLight(0x7928ca, 1.2);
-    rimLight.position.set(-40, -20, -30);
+    // Soft Aurora rim accent
+    const rimLight = new THREE.DirectionalLight(0xa770ef, 0.8);
+    rimLight.position.set(0, -20, -50);
     this.scene.add(rimLight);
   }
 
   _setupEnvironment() {
-    // Subtle circular grid base on X-Z plane
-    const gridHelper = new THREE.GridHelper(120, 40, 0x00e5ff, 0x132137);
-    gridHelper.position.y = -2;
-    gridHelper.material.opacity = 0.25;
+    // Architectural spatial grid in Google Material Grey 800 and 700
+    const gridHelper = new THREE.GridHelper(260, 52, 0x5f6368, 0x2a2b2e);
+    gridHelper.position.y = -1.2;
+    gridHelper.material.opacity = 0.4;
     gridHelper.material.transparent = true;
     this.scene.add(gridHelper);
 
-    // Deep space particle dust
-    const particleCount = 600;
+    // Subtle atmospheric dust particles
+    const particleCount = 400;
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(particleCount * 3);
     const colors = new Float32Array(particleCount * 3);
 
-    const cyan = new THREE.Color(0x00e5ff);
-    const darkBlue = new THREE.Color(0x1f3a60);
+    const blueColor = new THREE.Color(0x8ab4f8);
+    const greyColor = new THREE.Color(0x5f6368);
 
     for (let i = 0; i < particleCount; i++) {
       const i3 = i * 3;
-      positions[i3] = (Math.random() - 0.5) * 240;
-      positions[i3 + 1] = (Math.random() - 0.5) * 120;
-      positions[i3 + 2] = (Math.random() - 0.5) * 240;
+      positions[i3] = (Math.random() - 0.5) * 280;
+      positions[i3 + 1] = (Math.random() - 0.5) * 100 + 10;
+      positions[i3 + 2] = (Math.random() - 0.5) * 280;
 
-      const mixed = Math.random() > 0.7 ? cyan : darkBlue;
+      const mixed = Math.random() > 0.6 ? blueColor : greyColor;
       colors[i3] = mixed.r;
       colors[i3 + 1] = mixed.g;
       colors[i3 + 2] = mixed.b;
@@ -122,10 +122,10 @@ export class SceneManager {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const material = new THREE.PointsMaterial({
-      size: 1.2,
+      size: 1.0,
       vertexColors: true,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.35,
     });
 
     this.dust = new THREE.Points(geometry, material);
