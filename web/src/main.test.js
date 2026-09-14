@@ -161,6 +161,51 @@ describe('initializeApp', () => {
     expect(select.value).toBe('__overview__');
   });
 
+  it('updates incident panel and HUD cockpit status when ephemeris-remediated event fires', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'production-us-central1',
+          location: 'us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                {
+                  id: 'pod-payment',
+                  name: 'payment-service',
+                  status: 'CrashLoopBackOff',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+    app.hud.setSelectedPod(
+      { id: 'pod-payment', name: 'payment-service', status: 'CrashLoopBackOff' },
+      { clusterName: 'production-us-central1', namespaceName: 'default' }
+    );
+
+    const badge = document.getElementById('hud-target-badge');
+    expect(badge.className).toContain('status-crashloopbackoff');
+
+    // Dispatch ephemeris-remediated event
+    document.dispatchEvent(
+      new CustomEvent('ephemeris-remediated', {
+        detail: { podId: 'payment-service', status: 'Running' },
+      })
+    );
+
+    expect(badge.className).toContain('status-running');
+    expect(badge.textContent).toContain('Running');
+    expect(app.panel.statusBadge.className).toContain('status-running');
+    expect(app.panel.statusBadge.textContent).toBe('Running');
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

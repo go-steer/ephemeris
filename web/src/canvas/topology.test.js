@@ -121,14 +121,35 @@ describe('TopologyMesh', () => {
     expect(prodPos.equals(stagePos)).toBe(false);
   });
 
-  it('remediates a pod and updates status to Running', () => {
+  it('remediates a pod and updates status to Running, transitioning cluster and namespace alert labels', () => {
     topology.build(activeTopology);
     const crashPod = topology.getInteractiveObjects().find((m) => m.userData.isCrashLoop);
     expect(crashPod).toBeDefined();
 
+    // Check pre-remediation cluster and namespace alert state
+    const clusterSlit = topology.clusterSlits.get('test-cluster');
+    expect(clusterSlit).toBeDefined();
+    expect(clusterSlit.material.color.getHex()).toBe(0xea4335);
+
+    const nsEntry = topology.namespacePlaques.get('test-cluster/production');
+    expect(nsEntry).toBeDefined();
+    expect(nsEntry.rimLine.material.color.getHex()).toBe(0xea4335);
+
     topology.remediatePod('payment-service', 'Running');
     expect(crashPod.userData.isCrashLoop).toBe(false);
     expect(crashPod.userData.pod.status).toBe('Running');
+
+    // Verify cluster LED slit transitioned to Google Green (0x34a853)
+    expect(clusterSlit.material.color.getHex()).toBe(0x34a853);
+    expect(clusterSlit.material.emissive.getHex()).toBe(0x34a853);
+
+    // Verify namespace rim line transitioned to Google Blue (0x4285f4)
+    expect(nsEntry.rimLine.material.color.getHex()).toBe(0x4285f4);
+
+    // Verify cluster plaque sprite was recreated
+    const clusterPlaque = topology.clusterPlaques.get('test-cluster');
+    expect(clusterPlaque).toBeDefined();
+    expect(clusterPlaque.sprite).toBeDefined();
   });
 
   it('renders canonical 3D Kubernetes Pod shapes (hexagon container + heptagon boundary) and Google status colors', () => {

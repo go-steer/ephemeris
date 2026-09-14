@@ -158,6 +158,10 @@ export class TopologyMesh {
     this.curveParticles = [];
     this.podMap = new Map(); // pod.id / name -> podMesh
     this.clusterPositions = new Map(); // cluster.name -> Vector3
+    this.clusterPlaques = new Map(); // cluster.name -> { sprite, group }
+    this.clusterSlits = new Map(); // cluster.name -> slitMesh
+    this.namespacePlaques = new Map(); // `${cluster.name}/${ns.name}` -> { sprite, rimLine, zoneCenter }
+    this.podConduits = new Map(); // podName -> array of { line, particles }
   }
 
   /**
@@ -260,6 +264,7 @@ export class TopologyMesh {
     clusterGroup.add(slitMesh);
 
     this.clusterMonoliths.push(monolithMesh);
+    this.clusterSlits.set(cluster.name, slitMesh);
 
     // 3. Cluster Plaque Billboard
     const statusLabel = hasCrash ? '1 CRASHING' : 'HEALTHY';
@@ -267,6 +272,7 @@ export class TopologyMesh {
     const plaqueSprite = createTextSprite(cluster.name, statusTextColor, 18, statusLabel);
     plaqueSprite.position.set(0, 4.4, 0);
     clusterGroup.add(plaqueSprite);
+    this.clusterPlaques.set(cluster.name, { sprite: plaqueSprite, group: clusterGroup });
 
     this.group.add(clusterGroup);
   }
@@ -329,7 +335,8 @@ export class TopologyMesh {
         transparent: true,
         opacity: nsHasCrash ? 0.92 : 0.75,
       });
-      this.group.add(new THREE.Line(nsRimGeo, nsRimMat));
+      const nsRimLine = new THREE.Line(nsRimGeo, nsRimMat);
+      this.group.add(nsRimLine);
 
       // Namespace header sprite tag (alert red if namespace has crashing workloads)
       const nsColor = nsHasCrash ? '#ea4335' : '#8ab4f8';
@@ -337,6 +344,12 @@ export class TopologyMesh {
       const nsSprite = createTextSprite(`ns: ${ns.name}`, nsColor, 14, nsBadge);
       nsSprite.position.set(zoneCenter.x, 1.5, zoneCenter.z - 4.4);
       this.group.add(nsSprite);
+
+      this.namespacePlaques.set(`${cluster.name}/${ns.name}`, {
+        sprite: nsSprite,
+        rimLine: nsRimLine,
+        zoneCenter,
+      });
 
       // Pods within this namespace territory
       this._buildPodNodes(ns, zoneCenter, cluster.name);
@@ -496,7 +509,11 @@ export class TopologyMesh {
         toMesh.getWorldPosition(end);
         end.y += 0.7;
 
-        this._createCurve(start, end, color);
+        const conduit = this._createCurve(start, end, color);
+        if (!this.podConduits.has(to)) {
+          this.podConduits.set(to, []);
+        }
+        this.podConduits.get(to).push(conduit);
       }
     });
   }
@@ -518,6 +535,7 @@ export class TopologyMesh {
     this.group.add(line);
 
     // Particle flow animation along curve
+    const particles = [];
     const particleCount = 3;
     for (let i = 0; i < particleCount; i++) {
       const pGeo = new THREE.SphereGeometry(0.1, 8, 8);
@@ -528,6 +546,7 @@ export class TopologyMesh {
       });
       const pMesh = new THREE.Mesh(pGeo, pMat);
       this.group.add(pMesh);
+      particles.push(pMesh);
 
       this.curveParticles.push({
         mesh: pMesh,
@@ -535,6 +554,8 @@ export class TopologyMesh {
         offset: i / particleCount,
       });
     }
+
+    return { line, particles };
   }
 
   /**
@@ -590,7 +611,9 @@ export class TopologyMesh {
 
     const colorScheme = STATUS_COLORS[status] || STATUS_COLORS.Running;
     targetMesh.userData.isCrashLoop = false;
-    targetMesh.userData.pod.status = status;
+    if (targetMesh.userData.pod) {
+      targetMesh.userData.pod.status = status;
+    }
 
     // Remove from crashPods
     this.crashPods = this.crashPods.filter((m) => m !== targetMesh);
@@ -622,10 +645,97 @@ export class TopologyMesh {
         }
         targetMesh.userData.nameSprite.material.dispose();
       }
-      const newSprite = createTextSprite(targetMesh.userData.pod.name, '#34a853', 14, 'Healthy');
+      const newSprite = createTextSprite(targetMesh.userData.pod.name, '#34a853', 14, 'Running');
       newSprite.position.set(0, 1.85, 0);
       targetMesh.userData.podGroup.add(newSprite);
       targetMesh.userData.nameSprite = newSprite;
+    }
+
+    // Transition incoming dependency conduits to healthy Google Green
+    const podName = targetMesh.userData.pod ? targetMesh.userData.pod.name : podId;
+    const conduits = this.podConduits.get(podName) || this.podConduits.get(podId) || [];
+    for (const conduit of conduits) {
+      if (conduit.line && conduit.line.material) {
+        conduit.line.material.color.setHex(0x34a853);
+        conduit.line.material.opacity = 0.65;
+      }
+      for (const pMesh of conduit.particles || []) {
+        if (pMesh.material) {
+          pMesh.material.color.setHex(0x34a853);
+        }
+      }
+    }
+
+    const clusterName = targetMesh.userData.clusterName;
+    const nsName = targetMesh.userData.namespaceName;
+
+    // Check if any pods remain failing in this namespace
+    const nsHasCrashing = this.podMeshes.some(
+      (m) =>
+        m.userData.clusterName === clusterName &&
+        m.userData.namespaceName === nsName &&
+        (m.userData.isCrashLoop ||
+          (m.userData.pod &&
+            (m.userData.pod.status === 'CrashLoopBackOff' || m.userData.pod.status === 'Failed')))
+    );
+
+    if (!nsHasCrashing) {
+      const nsKey = `${clusterName}/${nsName}`;
+      const nsPlaque = this.namespacePlaques.get(nsKey);
+      if (nsPlaque) {
+        if (nsPlaque.rimLine && nsPlaque.rimLine.material) {
+          nsPlaque.rimLine.material.color.setHex(0x4285f4);
+          nsPlaque.rimLine.material.opacity = 0.75;
+        }
+        if (nsPlaque.sprite) {
+          this.group.remove(nsPlaque.sprite);
+          if (nsPlaque.sprite.material) {
+            if (nsPlaque.sprite.material.map) {
+              nsPlaque.sprite.material.map.dispose();
+            }
+            nsPlaque.sprite.material.dispose();
+          }
+          const newNsSprite = createTextSprite(`ns: ${nsName}`, '#8ab4f8', 14, '');
+          newNsSprite.position.set(nsPlaque.zoneCenter.x, 1.5, nsPlaque.zoneCenter.z - 4.4);
+          this.group.add(newNsSprite);
+          nsPlaque.sprite = newNsSprite;
+        }
+      }
+    }
+
+    // Check if any pods remain failing in this entire cluster
+    const clusterHasCrashing = this.podMeshes.some(
+      (m) =>
+        m.userData.clusterName === clusterName &&
+        (m.userData.isCrashLoop ||
+          (m.userData.pod &&
+            (m.userData.pod.status === 'CrashLoopBackOff' || m.userData.pod.status === 'Failed')))
+    );
+
+    if (!clusterHasCrashing) {
+      // Transition cluster monolith LED slit to Google Green
+      const slitMesh = this.clusterSlits.get(clusterName);
+      if (slitMesh && slitMesh.material) {
+        slitMesh.material.color.setHex(0x34a853);
+        slitMesh.material.emissive.setHex(0x34a853);
+        slitMesh.material.emissiveIntensity = 1.0;
+      }
+
+      // Transition cluster plaque billboard to HEALTHY Google Green
+      const plaqueEntry = this.clusterPlaques.get(clusterName);
+      if (plaqueEntry && plaqueEntry.sprite && plaqueEntry.group) {
+        plaqueEntry.group.remove(plaqueEntry.sprite);
+        if (plaqueEntry.sprite.material) {
+          if (plaqueEntry.sprite.material.map) {
+            plaqueEntry.sprite.material.map.dispose();
+          }
+          plaqueEntry.sprite.material.dispose();
+        }
+        const newClusterSprite = createTextSprite(clusterName, '#34a853', 18, 'HEALTHY');
+        newClusterSprite.position.set(0, 4.4, 0);
+        plaqueEntry.group.add(newClusterSprite);
+        plaqueEntry.sprite = newClusterSprite;
+      }
     }
   }
 
@@ -662,5 +772,9 @@ export class TopologyMesh {
     this.curveParticles = [];
     this.podMap.clear();
     this.clusterPositions.clear();
+    this.clusterPlaques.clear();
+    this.clusterSlits.clear();
+    this.namespacePlaques.clear();
+    this.podConduits.clear();
   }
 }

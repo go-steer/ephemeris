@@ -234,18 +234,36 @@ export function initializeApp() {
       topologyMesh.remediatePod(podId, newStatus);
       if (panel.statusBadge) {
         panel.statusBadge.textContent = newStatus;
+        panel.statusBadge.className = `panel-status-pill status-${newStatus.toLowerCase()}`;
       }
       hud.setStatusMessage(
         `Remediation verified: ${podId} is now ${newStatus}. Spatial mesh updated.`,
         false
       );
 
+      // Update selected pod in HUD cockpit if it matches
+      if (
+        hud.selectedPod &&
+        (hud.selectedPod.id === podId ||
+          hud.selectedPod.name === podId ||
+          podId.includes(hud.selectedPod.name) ||
+          (hud.selectedPod.id && hud.selectedPod.id.includes(podId)))
+      ) {
+        hud.selectedPod.status = newStatus;
+        hud.setSelectedPod(hud.selectedPod, hud.selectedMeta);
+      }
+
       // Update cluster stats
       if (currentTopologyData && currentTopologyData.clusters) {
         currentTopologyData.clusters.forEach((c) => {
           (c.namespaces || []).forEach((ns) => {
             (ns.pods || []).forEach((p) => {
-              if (p.name === podId || p.id === podId) {
+              if (
+                p.name === podId ||
+                p.id === podId ||
+                podId.includes(p.name) ||
+                (p.id && podId.includes(p.id))
+              ) {
                 p.status = newStatus;
               }
             });
@@ -255,7 +273,7 @@ export function initializeApp() {
         const activeClusterName = select ? select.value : currentTopologyData.clusters[0]?.name;
         hud.setClusters(currentTopologyData.clusters, activeClusterName);
         if (activeClusterName) {
-          hud.onClusterSelect(activeClusterName);
+          hud.onClusterSelect(activeClusterName, true);
         }
       }
     }
