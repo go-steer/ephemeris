@@ -206,6 +206,41 @@ describe('initializeApp', () => {
     expect(app.panel.statusBadge.textContent).toBe('Running');
   });
 
+  it('handles ephemeris-traffic-drain event and updates spatial mesh and HUD status', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'production-us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                {
+                  id: 'pod-payment',
+                  name: 'payment-service',
+                  status: 'CrashLoopBackOff',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+
+    // Dispatch ephemeris-traffic-drain event
+    document.dispatchEvent(
+      new CustomEvent('ephemeris-traffic-drain', {
+        detail: { podId: 'payment-service', percent: 25 },
+      })
+    );
+
+    const statusMsg = document.getElementById('hud-status-msg');
+    expect(statusMsg.textContent).toContain('Traffic drained to 25% on payment-service');
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

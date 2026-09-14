@@ -234,6 +234,105 @@ const SHADOW_CSS = `
   margin-bottom: 4px;
 }
 
+/* TRAFFIC DRAIN CONTROL */
+.drain-card {
+  background: #151a28;
+  border: 1px solid #252e42;
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drain-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.drain-title {
+  font-weight: 600;
+  color: #e8eaed;
+  font-size: 12.5px;
+}
+
+.drain-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.4px;
+}
+
+.drain-badge.full {
+  background: rgba(52, 168, 83, 0.15);
+  color: #34a853;
+  border: 1px solid rgba(52, 168, 83, 0.4);
+}
+
+.drain-badge.draining {
+  background: rgba(251, 188, 4, 0.18);
+  color: #fbbc04;
+  border: 1px solid rgba(251, 188, 4, 0.5);
+  animation: pulse-badge 1.5s infinite ease-in-out;
+}
+
+.drain-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.drain-slider {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #252e42;
+  border-radius: 3px;
+  outline: none;
+  accent-color: #4285f4;
+  cursor: pointer;
+}
+
+.drain-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #4285f4;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(66, 133, 244, 0.6);
+}
+
+.drain-btn {
+  background: #1b2234;
+  color: #9aa0a6;
+  border: 1px solid #252e42;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.drain-btn:hover {
+  border-color: #4285f4;
+  color: #e8eaed;
+  background: #252e42;
+}
+
+.drain-hint {
+  font-size: 11px;
+  color: #9aa0a6;
+  line-height: 1.3;
+}
+
 .health-card {
   background: #111b15;
   border: 1px solid #394663;

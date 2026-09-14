@@ -215,4 +215,64 @@ describe('ArrowSandboxRuntime', () => {
     expect(badge.textContent).toBe('Running');
     expect(hostEl.shadowRoot.querySelector('.remediation-success-banner')).not.toBeNull();
   });
+
+  it('renders interactive traffic drain slider and dispatches ephemeris-traffic-drain', async () => {
+    const code = `
+      const state = reactive({
+        trafficPercent: 100
+      });
+      function updateTraffic(val) {
+        state.trafficPercent = parseInt(val, 10);
+        container.dispatchEvent(new CustomEvent('ephemeris-traffic-drain', {
+          bubbles: true,
+          composed: true,
+          detail: { podId: data.pod_id, percent: state.trafficPercent }
+        }));
+      }
+      const template = html\`
+        <div class="ephemeris-widget">
+          <div class="drain-card">
+            <span class="drain-badge">\${() => state.trafficPercent}%</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              id="traffic-slider"
+              .value="\${() => state.trafficPercent}"
+              @input="\${(e) => updateTraffic(e.target.value)}"
+            />
+            <button id="drain-zero" @click="\${() => updateTraffic(0)}">Drain 0%</button>
+          </div>
+        </div>
+      \`;
+      template(container);
+    `;
+
+    let drainPercent = 100;
+    hostEl.addEventListener('ephemeris-traffic-drain', (e) => {
+      drainPercent = e.detail.percent;
+    });
+
+    const result = runtime.execute(code, { pod_id: 'payment-service' });
+    expect(result.success).toBe(true);
+
+    const slider = hostEl.shadowRoot.querySelector('#traffic-slider');
+    expect(slider).not.toBeNull();
+
+    // Trigger slider input event to 30%
+    slider.value = 30;
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(drainPercent).toBe(30);
+    expect(hostEl.shadowRoot.querySelector('.drain-badge').textContent).toBe('30%');
+
+    // Click drain-zero button
+    const zeroBtn = hostEl.shadowRoot.querySelector('#drain-zero');
+    zeroBtn.click();
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(drainPercent).toBe(0);
+    expect(hostEl.shadowRoot.querySelector('.drain-badge').textContent).toBe('0%');
+  });
 });

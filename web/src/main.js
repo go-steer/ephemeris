@@ -59,11 +59,13 @@ export function initializeApp() {
     const resourceUri = pod.resource_uri || `gke://${meta.namespaceName || 'default'}/${pod.name}`;
     hud.setSelectedPod(pod, meta);
     ws.selectNode(pod.id, resourceUri);
+    topologyMesh.highlightBlastRadius(pod.name || pod.id);
   };
 
   hud.onResetView = () => {
     controls.resetView();
     hud.setSelectedPod(null);
+    topologyMesh.clearBlastRadius();
     const select = document.getElementById('hud-cluster-select');
     if (select) {
       select.value = '__overview__';
@@ -178,6 +180,7 @@ export function initializeApp() {
       if (!skipCameraFocus) {
         controls.resetView();
       }
+      topologyMesh.clearBlastRadius();
       let running = 0;
       let crash = 0;
       let pending = 0;
@@ -282,6 +285,19 @@ export function initializeApp() {
   document.addEventListener('ephemeris-remediated', onRemediate);
   window.addEventListener('ephemeris-remediated', onRemediate);
 
+  // Wire Live Traffic Drain Event (dispatched from ArrowJS sandbox) -> 3D Mesh
+  const onTrafficDrain = (e) => {
+    if (e.detail && e.detail.podId) {
+      const podId = e.detail.podId;
+      const percent = parseInt(e.detail.percent, 10);
+      topologyMesh.setTrafficDrain(podId, percent);
+      hud.setStatusMessage(`Traffic drained to ${percent}% on ${podId}. Conduits adjusted.`, false);
+    }
+  };
+
+  document.addEventListener('ephemeris-traffic-drain', onTrafficDrain);
+  window.addEventListener('ephemeris-traffic-drain', onTrafficDrain);
+
   // 5. Wire Prompt Submission -> Intelligent Target Resolution & WebSocket
   hud.onPromptSubmit = (promptText, pod, meta) => {
     let targetPod = pod;
@@ -322,6 +338,7 @@ export function initializeApp() {
     if (targetMesh) {
       controls.focusOnMesh(targetMesh);
     }
+    topologyMesh.highlightBlastRadius(targetPod.name || targetPod.id);
 
     hud.setSelectedPod(targetPod, targetMeta);
     promptStartTime = performance.now();

@@ -141,6 +141,7 @@ func (a *Agent) generateCrashTriageFallback(_ string, _ *api.TelemetryData) stri
 		"  remediationStep: 0,\n" +
 		"  remediationAction: '',\n" +
 		"  remediationSuccess: false,\n" +
+		"  trafficPercent: 100,\n" +
 		"  currentStatus: (data.metrics && data.metrics.status) || 'CrashLoopBackOff'\n" +
 		"});\n\n" +
 		"function getFilteredLogs() {\n" +
@@ -149,6 +150,16 @@ func (a *Agent) generateCrashTriageFallback(_ string, _ *api.TelemetryData) stri
 		"    const matchesSearch = !state.search || log.message.toLowerCase().includes(state.search.toLowerCase());\n" +
 		"    return matchesFilter && matchesSearch;\n" +
 		"  });\n" +
+		"}\n\n" +
+		"function updateTrafficDrain(val) {\n" +
+		"  state.trafficPercent = parseInt(val, 10);\n" +
+		"  if (container && container.dispatchEvent) {\n" +
+		"    container.dispatchEvent(new CustomEvent('ephemeris-traffic-drain', {\n" +
+		"      bubbles: true,\n" +
+		"      composed: true,\n" +
+		"      detail: { podId: data.pod_id || 'payment-service', percent: state.trafficPercent }\n" +
+		"    }));\n" +
+		"  }\n" +
 		"}\n\n" +
 		"function runRemediation(actionName) {\n" +
 		"  state.remediating = true;\n" +
@@ -163,7 +174,7 @@ func (a *Agent) generateCrashTriageFallback(_ string, _ *api.TelemetryData) stri
 		"      container.dispatchEvent(new CustomEvent('ephemeris-remediated', {\n" +
 		"        bubbles: true,\n" +
 		"        composed: true,\n" +
-		"        detail: { podId: data.pod_id || 'payment-service', status: 'Running' }\n" +
+		"        detail: { podId: data.pod_id || 'payment-service', status: 'Running', action: actionName }\n" +
 		"      }));\n" +
 		"    }\n" +
 		"  }, 900);\n" +
@@ -194,7 +205,7 @@ func (a *Agent) generateCrashTriageFallback(_ string, _ *api.TelemetryData) stri
           <span class="success-icon">✓</span>
           <span class="success-title">Remediation Deployed & Verified</span>
         </div>
-        <p class="success-desc">Rolled back to verified release <strong>v2.1.3</strong>. Crashing container terminated; new pod healthy (readiness probe 200 OK). Error rate returned to 0.00%.</p>
+        <p class="success-desc">Remediation <strong>${() => state.remediationAction}</strong> successfully applied. Crashing container replaced with healthy replica (readiness probe 200 OK). Error rate returned to 0.00%.</p>
         <div class="success-actions">
           <button class="btn-action outline" @click="${() => { state.tab = 'LOGS'; }}">Inspect Container Logs</button>
           <button class="btn-action primary" @click="${() => { state.remediationSuccess = false; state.remediating = false; }}">Done</button>
@@ -209,11 +220,11 @@ func (a *Agent) generateCrashTriageFallback(_ string, _ *api.TelemetryData) stri
         <div class="stepper-list">
           <div class="${() => state.remediationStep >= 1 ? 'step-item done' : 'step-item'}">
             <span class="step-num">1</span>
-            <span class="step-text">Patching deployment/payment-service image (target: v2.1.3)...</span>
+            <span class="step-text">${() => state.remediationAction.includes('Memory') ? 'Patching pod resource limits (memory: 2Gi)...' : state.remediationAction.includes('Restart') ? 'Evicting pod to reset exponential backoff...' : 'Patching deployment/payment-service image (target: v2.1.3)...'}</span>
           </div>
           <div class="${() => state.remediationStep >= 2 ? 'step-item done' : 'step-item'}">
             <span class="step-num">2</span>
-            <span class="step-text">Sending SIGTERM to crashing container and clearing crash backoff...</span>
+            <span class="step-text">${() => state.remediationAction.includes('Restart') ? 'Kubelet scheduling clean pod instance...' : 'Sending SIGTERM to crashing container and clearing crash backoff...'}</span>
           </div>
           <div class="${() => state.remediationStep >= 3 ? 'step-item done' : 'step-item'}">
             <span class="step-num">3</span>
@@ -223,6 +234,36 @@ func (a *Agent) generateCrashTriageFallback(_ string, _ *api.TelemetryData) stri
       </div>
 
       <div class="${() => (!state.remediationSuccess && !state.remediating) ? 'triage-details' : 'triage-details hidden'}">
+        <div class="drain-card">
+          <div class="drain-header">
+            <span class="drain-title">🚦 Inbound Traffic Drain</span>
+            <span class="${() => 'drain-badge ' + (state.trafficPercent < 100 ? 'draining' : 'full')}">
+              ${() => state.trafficPercent}% Inbound
+            </span>
+          </div>
+          <div class="drain-slider-row">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="10"
+              class="drain-slider"
+              .value="${() => state.trafficPercent}"
+              @input="${(e) => updateTrafficDrain(e.target.value)}"
+            />
+            <button class="drain-btn" @click="${() => updateTrafficDrain(state.trafficPercent > 0 ? 0 : 100)}">
+              ${() => state.trafficPercent > 0 ? 'Drain to 0%' : 'Restore 100%'}
+            </button>
+          </div>
+          <div class="drain-hint">
+            ${() => state.trafficPercent === 0
+              ? 'All ingress traffic diverted to healthy replicas. Pod isolated from client requests.'
+              : state.trafficPercent < 100
+                ? 'Partial traffic shed active. Error rate reduced across caller mesh.'
+                : 'Normal 100% traffic routing active.'}
+          </div>
+        </div>
+
         <div class="diagnosis-card">
           <div class="diagnosis-header">
             <span class="diagnosis-pill">ROOT CAUSE</span>

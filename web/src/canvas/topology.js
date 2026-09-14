@@ -162,6 +162,10 @@ export class TopologyMesh {
     this.clusterSlits = new Map(); // cluster.name -> slitMesh
     this.namespacePlaques = new Map(); // `${cluster.name}/${ns.name}` -> { sprite, rimLine, zoneCenter }
     this.podConduits = new Map(); // podName -> array of { line, particles }
+    this.conduits = [];
+    this.blastRadiusPods = new Set();
+    this.blastRadiusConduits = new Set();
+    this.trafficDrainMap = new Map();
   }
 
   /**
@@ -509,7 +513,7 @@ export class TopologyMesh {
         toMesh.getWorldPosition(end);
         end.y += 0.7;
 
-        const conduit = this._createCurve(start, end, color);
+        const conduit = this._createCurve(start, end, color, from, to);
         if (!this.podConduits.has(to)) {
           this.podConduits.set(to, []);
         }
@@ -518,7 +522,7 @@ export class TopologyMesh {
     });
   }
 
-  _createCurve(start, end, colorHex) {
+  _createCurve(start, end, colorHex, from, to) {
     const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
     mid.y += 1.6;
 
@@ -537,6 +541,7 @@ export class TopologyMesh {
     // Particle flow animation along curve
     const particles = [];
     const particleCount = 3;
+    const startIndex = this.curveParticles.length;
     for (let i = 0; i < particleCount; i++) {
       const pGeo = new THREE.SphereGeometry(0.1, 8, 8);
       const pMat = new THREE.MeshBasicMaterial({
@@ -552,10 +557,25 @@ export class TopologyMesh {
         mesh: pMesh,
         curve: curve,
         offset: i / particleCount,
+        conduit: null,
       });
     }
 
-    return { line, particles };
+    const conduit = {
+      line,
+      particles,
+      from,
+      to,
+      originalColor: colorHex,
+      originalOpacity: 0.5,
+      flowSpeedFactor: 1.0,
+    };
+    for (let i = startIndex; i < this.curveParticles.length; i++) {
+      this.curveParticles[i].conduit = conduit;
+    }
+    this.conduits.push(conduit);
+
+    return conduit;
   }
 
   /**
@@ -583,9 +603,15 @@ export class TopologyMesh {
       }
     }
 
-    // Animate data flow particles along conduits
+    // Animate data flow particles along conduits, respecting traffic drain
     for (const p of this.curveParticles) {
-      const progress = (time * 0.00035 + p.offset) % 1;
+      const speedFactor = p.conduit?.flowSpeedFactor ?? 1.0;
+      if (speedFactor <= 0.05) {
+        p.mesh.visible = false;
+        continue;
+      }
+      p.mesh.visible = true;
+      const progress = (time * 0.00035 * speedFactor + p.offset) % 1;
       const pos = p.curve.getPoint(progress);
       p.mesh.position.copy(pos);
     }
@@ -737,6 +763,127 @@ export class TopologyMesh {
         plaqueEntry.sprite = newClusterSprite;
       }
     }
+
+    // Reset any active blast radius on resolution
+    this.clearBlastRadius();
+  }
+
+  /**
+   * Highlights the blast radius (upstream callers and downstream dependencies) in Google Amber (#FBBC04).
+   * @param {string} targetPodId
+   */
+  highlightBlastRadius(targetPodId) {
+    if (!targetPodId) return;
+    this.clearBlastRadius();
+
+    let normalized = targetPodId;
+    for (const key of this.podMap.keys()) {
+      if (typeof key === 'string' && (key.includes(targetPodId) || targetPodId.includes(key))) {
+        normalized = key;
+        break;
+      }
+    }
+
+    for (const conduit of this.conduits) {
+      const fromMatch =
+        conduit.from && (conduit.from.includes(normalized) || normalized.includes(conduit.from));
+      const toMatch =
+        conduit.to && (conduit.to.includes(normalized) || normalized.includes(conduit.to));
+
+      if (fromMatch || toMatch) {
+        this.blastRadiusConduits.add(conduit);
+        if (conduit.line && conduit.line.material) {
+          conduit.line.material.color.setHex(0xfbbc04);
+          conduit.line.material.opacity = 0.9;
+        }
+        for (const p of conduit.particles) {
+          if (p.material) {
+            p.material.color.setHex(0xfbbc04);
+          }
+        }
+
+        const otherPodName = fromMatch ? conduit.to : conduit.from;
+        let otherMesh = this.podMap.get(otherPodName);
+        if (!otherMesh) {
+          for (const [k, m] of this.podMap.entries()) {
+            if (typeof k === 'string' && (k.includes(otherPodName) || otherPodName.includes(k))) {
+              otherMesh = m;
+              break;
+            }
+          }
+        }
+
+        const targetMesh = this.podMap.get(normalized);
+        if (otherMesh && otherMesh !== targetMesh) {
+          this.blastRadiusPods.add(otherMesh);
+          if (otherMesh.userData.podBoundary && otherMesh.userData.podBoundary.material) {
+            otherMesh.userData.podBoundary.material.color.setHex(0xfbbc04);
+            otherMesh.userData.podBoundary.material.opacity = 1.0;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Clears active blast radius highlighting and restores default colors.
+   */
+  clearBlastRadius() {
+    for (const mesh of this.blastRadiusPods) {
+      if (mesh.userData && mesh.userData.podBoundary && mesh.userData.podBoundary.material) {
+        const isCrash =
+          mesh.userData.isCrashLoop ||
+          (mesh.userData.pod &&
+            (mesh.userData.pod.status === 'CrashLoopBackOff' ||
+              mesh.userData.pod.status === 'Failed'));
+        mesh.userData.podBoundary.material.color.setHex(isCrash ? 0xea4335 : 0x326ce5);
+        mesh.userData.podBoundary.material.opacity = 0.8;
+      }
+    }
+    this.blastRadiusPods.clear();
+
+    for (const conduit of this.blastRadiusConduits) {
+      if (conduit.line && conduit.line.material) {
+        conduit.line.material.color.setHex(conduit.originalColor || 0x4285f4);
+        conduit.line.material.opacity = conduit.originalOpacity || 0.5;
+      }
+      for (const p of conduit.particles) {
+        if (p.material) {
+          p.material.color.setHex(conduit.originalColor || 0x4285f4);
+        }
+      }
+    }
+    this.blastRadiusConduits.clear();
+  }
+
+  /**
+   * Sets traffic drain percentage (0 - 100) for incoming conduits to a pod.
+   * @param {string} podId
+   * @param {number} percent
+   */
+  setTrafficDrain(podId, percent) {
+    const p = Math.max(0, Math.min(100, Number(percent) || 0));
+    this.trafficDrainMap.set(podId, p);
+    const drainFactor = p / 100;
+
+    let targetConduits = this.podConduits.get(podId);
+    if (!targetConduits) {
+      for (const [key, conduits] of this.podConduits.entries()) {
+        if (typeof key === 'string' && (key.includes(podId) || podId.includes(key))) {
+          targetConduits = conduits;
+          break;
+        }
+      }
+    }
+
+    if (targetConduits) {
+      for (const conduit of targetConduits) {
+        conduit.flowSpeedFactor = drainFactor;
+        if (conduit.line && conduit.line.material) {
+          conduit.line.material.opacity = 0.12 + drainFactor * 0.55;
+        }
+      }
+    }
   }
 
   /**
@@ -770,6 +917,10 @@ export class TopologyMesh {
     this.crashPods = [];
     this.clusterMonoliths = [];
     this.curveParticles = [];
+    this.conduits = [];
+    this.blastRadiusPods.clear();
+    this.blastRadiusConduits.clear();
+    this.trafficDrainMap.clear();
     this.podMap.clear();
     this.clusterPositions.clear();
     this.clusterPlaques.clear();

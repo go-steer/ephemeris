@@ -187,4 +187,56 @@ describe('TopologyMesh', () => {
     expect(crashPod.userData.nameSprite).toBeDefined();
     expect(crashPod.userData.nameSprite).not.toBe(oldSprite);
   });
+
+  it('highlights connected pods and conduits in amber on highlightBlastRadius and restores on clearBlastRadius', () => {
+    activeTopology.clusters[0].namespaces[0].pods.push({
+      id: 'pod-cart',
+      name: 'cart-service',
+      status: 'Running',
+    });
+    topology.build(activeTopology);
+
+    // Initial state: blastRadiusPods is empty
+    expect(topology.blastRadiusPods.size).toBe(0);
+
+    // Call highlightBlastRadius on payment-service
+    topology.highlightBlastRadius('payment-service');
+
+    // Conduits connected to payment-service should be highlighted amber (0xfbbc04)
+    expect(topology.blastRadiusConduits.size).toBeGreaterThan(0);
+    for (const conduit of topology.blastRadiusConduits) {
+      expect(conduit.line.material.color.getHex()).toBe(0xfbbc04);
+    }
+
+    // Connected caller (cart-service) should be highlighted in blastRadiusPods
+    expect(topology.blastRadiusPods.size).toBeGreaterThan(0);
+
+    // Clear blast radius
+    topology.clearBlastRadius();
+    expect(topology.blastRadiusPods.size).toBe(0);
+    expect(topology.blastRadiusConduits.size).toBe(0);
+  });
+
+  it('adjusts conduit flow and opacity on setTrafficDrain', () => {
+    activeTopology.clusters[0].namespaces[0].pods.push({
+      id: 'pod-cart',
+      name: 'cart-service',
+      status: 'Running',
+    });
+    topology.build(activeTopology);
+
+    topology.setTrafficDrain('payment-service', 20);
+    expect(topology.trafficDrainMap.get('payment-service')).toBe(20);
+
+    const conduits = topology.podConduits.get('payment-service');
+    expect(conduits).toBeDefined();
+    expect(conduits.length).toBeGreaterThan(0);
+    expect(conduits[0].flowSpeedFactor).toBeCloseTo(0.2, 1);
+    expect(conduits[0].line.material.opacity).toBeLessThan(0.5);
+
+    // Drain to 0%
+    topology.setTrafficDrain('payment-service', 0);
+    expect(topology.trafficDrainMap.get('payment-service')).toBe(0);
+    expect(conduits[0].flowSpeedFactor).toBe(0);
+  });
 });
