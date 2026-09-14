@@ -28,7 +28,13 @@ const STATUS_COLORS = {
  * Renders on high-resolution canvas with mipmapping and anisotropic filtering to eliminate blurriness.
  */
 function createTextSprite(text, color = '#e8eaed', fontSize = 16, badge = '') {
-  const displayText = badge ? `${text}  •  ${badge}` : text;
+  const isRed = color === '#ea4335' || color === '#f28b82' || color === 'var(--accent-red)';
+  const isGreen = color === '#34a853' || color === '#81c995';
+  const isYellow = color === '#fbbc04' || color === '#fdd663';
+
+  // For trouble resources, prepend ✕ icon to echo HUD crash badge
+  const iconPrefix = isRed ? '\u2715 ' : '';
+  const displayText = badge ? `${iconPrefix}${text}  \u2022  ${badge}` : `${iconPrefix}${text}`;
 
   // High-resolution canvas rendering multiplier (3.5x) for needle-sharp text in 3D
   const scale = 3.5;
@@ -41,7 +47,7 @@ function createTextSprite(text, color = '#e8eaed', fontSize = 16, badge = '') {
   const measureCtx = measureCanvas.getContext('2d');
   if (!measureCtx) return new THREE.Object3D();
 
-  measureCtx.font = `600 ${renderFontSize}px "Google Sans", "Roboto", -apple-system, sans-serif`;
+  measureCtx.font = `700 ${renderFontSize}px "Google Sans", "Roboto", -apple-system, sans-serif`;
   const textWidth = measureCtx.measureText(displayText).width;
 
   const canvasWidth = Math.max(Math.round(140 * scale), Math.ceil(textWidth + padX * 2));
@@ -53,49 +59,77 @@ function createTextSprite(text, color = '#e8eaed', fontSize = 16, badge = '') {
   const ctx = canvas.getContext('2d');
   if (!ctx) return new THREE.Object3D();
 
-  // Background pill in Antigravity deep glassmorphic slate (#0b0f19)
-  ctx.fillStyle = 'rgba(11, 15, 25, 0.94)';
-  ctx.beginPath();
+  // Glassmorphic pill background with status-tinted fill
   const radius = Math.round(7 * scale);
+  ctx.beginPath();
   if (typeof ctx.roundRect === 'function') {
     ctx.roundRect(scale, scale, canvasWidth - scale * 2, canvasHeight - scale * 2, radius);
   } else {
     ctx.rect(scale, scale, canvasWidth - scale * 2, canvasHeight - scale * 2);
   }
+
+  // Base dark container
+  ctx.fillStyle = 'rgba(11, 15, 25, 0.94)';
   ctx.fill();
 
-  // Status border hairline in authentic Google palette
-  const isRed = color === '#ea4335' || color === '#f28b82';
-  const isGreen = color === '#34a853' || color === '#81c995';
-  const isYellow = color === '#fbbc04' || color === '#fdd663';
+  // Tint overlay matching HUD stat badges
+  if (isRed) {
+    ctx.fillStyle = 'rgba(234, 67, 53, 0.22)';
+    ctx.fill();
+  } else if (isGreen) {
+    ctx.fillStyle = 'rgba(52, 168, 83, 0.16)';
+    ctx.fill();
+  } else if (isYellow) {
+    ctx.fillStyle = 'rgba(251, 188, 4, 0.16)';
+    ctx.fill();
+  }
+
+  // Status border hairline with subtle glow
+  if (isRed) {
+    ctx.shadowColor = 'rgba(234, 67, 53, 0.7)';
+    ctx.shadowBlur = Math.round(6 * scale);
+  } else {
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+  }
+
   ctx.strokeStyle = isRed
-    ? 'rgba(234, 67, 53, 0.92)'
+    ? 'rgba(234, 67, 53, 0.95)'
     : isGreen
       ? 'rgba(52, 168, 83, 0.92)'
       : isYellow
         ? 'rgba(251, 188, 4, 0.92)'
         : 'rgba(66, 133, 244, 0.85)';
-  ctx.lineWidth = Math.round(1.5 * scale);
+  ctx.lineWidth = Math.round(1.6 * scale);
   ctx.stroke();
 
-  // Draw crisp text centered
-  ctx.font = `600 ${renderFontSize}px "Google Sans", "Roboto", -apple-system, sans-serif`;
+  // Reset shadow for razor-sharp typography
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+
+  // Draw crisp text centered with exact vibrant Google status colors
+  ctx.font = `700 ${renderFontSize}px "Google Sans", "Roboto", -apple-system, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = color;
+  ctx.fillStyle = isRed ? '#ea4335' : isGreen ? '#34a853' : isYellow ? '#fbbc04' : color;
   ctx.fillText(displayText, canvasWidth / 2, canvasHeight / 2);
 
   const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
   texture.generateMipmaps = true;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.anisotropy = 16;
   texture.needsUpdate = true;
 
+  // toneMapped: false and fog: false prevent scene tone mapping and distance fog
+  // from dulling/darkening UI billboard colors
   const spriteMaterial = new THREE.SpriteMaterial({
     map: texture,
     transparent: true,
     depthWrite: false,
+    toneMapped: false,
+    fog: false,
   });
   const sprite = new THREE.Sprite(spriteMaterial);
 
@@ -228,7 +262,7 @@ export class TopologyMesh {
     this.clusterMonoliths.push(monolithMesh);
 
     // 3. Cluster Plaque Billboard
-    const statusLabel = hasCrash ? '1 ALERT' : 'HEALTHY';
+    const statusLabel = hasCrash ? '1 CRASHING' : 'HEALTHY';
     const statusTextColor = hasCrash ? '#ea4335' : '#34a853';
     const plaqueSprite = createTextSprite(cluster.name, statusTextColor, 18, statusLabel);
     plaqueSprite.position.set(0, 4.4, 0);
@@ -274,7 +308,10 @@ export class TopologyMesh {
       nsPadMesh.position.set(zoneCenter.x, 0.9, zoneCenter.z);
       this.group.add(nsPadMesh);
 
-      // Namespace border line (Google Blue accent #4285F4)
+      // Namespace border line (Google Blue accent #4285F4 or Red if contains crashing workloads)
+      const nsHasCrash = (ns.pods || []).some(
+        (p) => p.status === 'CrashLoopBackOff' || p.status === 'Failed'
+      );
       const nsRimPoints = [];
       for (let i = 0; i <= 6; i++) {
         const theta = (i / 6) * Math.PI * 2;
@@ -288,14 +325,16 @@ export class TopologyMesh {
       }
       const nsRimGeo = new THREE.BufferGeometry().setFromPoints(nsRimPoints);
       const nsRimMat = new THREE.LineBasicMaterial({
-        color: 0x4285f4,
+        color: nsHasCrash ? 0xea4335 : 0x4285f4,
         transparent: true,
-        opacity: 0.75,
+        opacity: nsHasCrash ? 0.92 : 0.75,
       });
       this.group.add(new THREE.Line(nsRimGeo, nsRimMat));
 
-      // Namespace header sprite tag
-      const nsSprite = createTextSprite(`ns: ${ns.name}`, '#8ab4f8', 14);
+      // Namespace header sprite tag (alert red if namespace has crashing workloads)
+      const nsColor = nsHasCrash ? '#ea4335' : '#8ab4f8';
+      const nsBadge = nsHasCrash ? '1 CRASHING' : '';
+      const nsSprite = createTextSprite(`ns: ${ns.name}`, nsColor, 14, nsBadge);
       nsSprite.position.set(zoneCenter.x, 1.5, zoneCenter.z - 4.4);
       this.group.add(nsSprite);
 
@@ -405,10 +444,20 @@ export class TopologyMesh {
       }
 
       // 4. Pod name billboard tag
-      const subtitle = pod.restarts > 0 ? `${pod.restarts} restarts` : '';
+      const subtitle = isCrash
+        ? pod.restarts > 0
+          ? `${pod.restarts} restarts`
+          : '1 CRASHING'
+        : pod.restarts > 0
+          ? `${pod.restarts} restarts`
+          : '';
       const nameSprite = createTextSprite(pod.name, colorScheme.text, 14, subtitle);
       nameSprite.position.set(0, 1.85, 0);
       podGroup.add(nameSprite);
+
+      // Save references on userData for real-time remediation updates
+      containerMesh.userData.nameSprite = nameSprite;
+      containerMesh.userData.podGroup = podGroup;
 
       this.group.add(podGroup);
       this.podMeshes.push(containerMesh);
@@ -562,6 +611,21 @@ export class TopologyMesh {
     if (targetMesh.userData.podBoundary && targetMesh.userData.podBoundary.material) {
       targetMesh.userData.podBoundary.material.color.setHex(0x326ce5);
       targetMesh.userData.podBoundary.material.opacity = 0.8;
+    }
+
+    // Update billboard name sprite to healthy Google Green (#34A853)
+    if (targetMesh.userData.nameSprite && targetMesh.userData.podGroup) {
+      targetMesh.userData.podGroup.remove(targetMesh.userData.nameSprite);
+      if (targetMesh.userData.nameSprite.material) {
+        if (targetMesh.userData.nameSprite.material.map) {
+          targetMesh.userData.nameSprite.material.map.dispose();
+        }
+        targetMesh.userData.nameSprite.material.dispose();
+      }
+      const newSprite = createTextSprite(targetMesh.userData.pod.name, '#34a853', 14, 'Healthy');
+      newSprite.position.set(0, 1.85, 0);
+      targetMesh.userData.podGroup.add(newSprite);
+      targetMesh.userData.nameSprite = newSprite;
     }
   }
 

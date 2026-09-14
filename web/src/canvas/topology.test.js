@@ -149,4 +149,21 @@ describe('TopologyMesh', () => {
     expect(runningPod.userData.baseColor).toBe(0x34a853);
     expect(crashPod.userData.baseColor).toBe(0xea4335);
   });
+
+  it('renders vibrant billboard sprites matching HUD status colors with sRGB, disabled tone mapping, and disabled fog', () => {
+    topology.build(activeTopology);
+    const pods = topology.getInteractiveObjects();
+    const crashPod = pods.find((m) => m.userData.pod.name === 'payment-service');
+
+    expect(crashPod.userData.nameSprite).toBeDefined();
+    const mat = crashPod.userData.nameSprite.material;
+    expect(mat.toneMapped).toBe(false);
+    expect(mat.fog).toBe(false);
+    expect(mat.map.colorSpace).toBe(THREE.SRGBColorSpace);
+
+    const oldSprite = crashPod.userData.nameSprite;
+    topology.remediatePod('payment-service', 'Running');
+    expect(crashPod.userData.nameSprite).toBeDefined();
+    expect(crashPod.userData.nameSprite).not.toBe(oldSprite);
+  });
 });
