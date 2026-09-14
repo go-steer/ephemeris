@@ -58,7 +58,7 @@ func TestServer_WebSocketWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WebSocket dial failed: %v", err)
 	}
-	defer wsConn.Close()
+	defer func() { _ = wsConn.Close() }()
 
 	// 1. Initial message from server should be topology
 	var topoMsg api.ServerMessage
