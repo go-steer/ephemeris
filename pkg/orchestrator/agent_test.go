@@ -23,7 +23,7 @@ import (
 	"github.com/go-steer/ephemeris/pkg/telemetry"
 )
 
-func TestAgent_GenerateFallback(t *testing.T) {
+func TestAgent_GenerateFallback_Crashing(t *testing.T) {
 	ctx := context.Background()
 	agent := NewAgent(ctx, AgentConfig{
 		Model:     "gemini-3.8-flash",
@@ -47,11 +47,74 @@ func TestAgent_GenerateFallback(t *testing.T) {
 	if !strings.Contains(code, "html`") {
 		t.Errorf("expected generated code to use ArrowJS 'html'")
 	}
-	if !strings.Contains(code, "template(container)") {
-		t.Errorf("expected generated code to mount to container")
+	if !strings.Contains(code, "Rollback") {
+		t.Errorf("expected crashing workload code to contain Rollback action")
+	}
+	assertNoPartialAttributeInterpolation(t, code)
+}
+
+func TestAgent_GenerateFallback_Healthy(t *testing.T) {
+	ctx := context.Background()
+	agent := NewAgent(ctx, AgentConfig{
+		Model:     "gemini-3.8-flash",
+		ForceMock: true,
+	})
+
+	telemProvider := telemetry.NewMockProvider()
+	telemData, err := telemProvider.QueryLogs(ctx, "gke://production/frontend", 10)
+	if err != nil {
+		t.Fatalf("QueryLogs failed: %v", err)
 	}
 
-	// Verify no partial attribute interpolation (e.g. class="...${...") which triggers ArrowJS "Invalid HTML position"
+	code, err := agent.GenerateUI(ctx, "Show status of frontend", telemData)
+	if err != nil {
+		t.Fatalf("GenerateUI failed: %v", err)
+	}
+
+	if !strings.Contains(code, "Service Health & Telemetry") {
+		t.Errorf("expected healthy workload to render Service Health & Telemetry tab")
+	}
+	if strings.Contains(code, "Rollback") {
+		t.Errorf("healthy workload should not offer rollback remediation")
+	}
+	if strings.Contains(code, "Panic") {
+		t.Errorf("healthy workload should not report runtime panic")
+	}
+	assertNoPartialAttributeInterpolation(t, code)
+}
+
+func TestAgent_GenerateFallback_Pending(t *testing.T) {
+	ctx := context.Background()
+	agent := NewAgent(ctx, AgentConfig{
+		Model:     "gemini-3.8-flash",
+		ForceMock: true,
+	})
+
+	telemProvider := telemetry.NewMockProvider()
+	telemData, err := telemProvider.QueryLogs(ctx, "gke://staging/batch-ingestor", 10)
+	if err != nil {
+		t.Fatalf("QueryLogs failed: %v", err)
+	}
+
+	code, err := agent.GenerateUI(ctx, "Inspect batch-ingestor", telemData)
+	if err != nil {
+		t.Fatalf("GenerateUI failed: %v", err)
+	}
+
+	if !strings.Contains(code, "Scheduling Diagnostics") {
+		t.Errorf("expected pending workload to render Scheduling Diagnostics tab")
+	}
+	if !strings.Contains(code, "Autoscaler") {
+		t.Errorf("expected pending workload to display autoscaler status")
+	}
+	if strings.Contains(code, "Rollback") {
+		t.Errorf("pending workload should not offer rollback remediation")
+	}
+	assertNoPartialAttributeInterpolation(t, code)
+}
+
+func assertNoPartialAttributeInterpolation(t *testing.T, code string) {
+	t.Helper()
 	reAttr := regexp.MustCompile(`[a-zA-Z0-9_\-]+="([^"]*)"`)
 	for _, match := range reAttr.FindAllStringSubmatch(code, -1) {
 		val := match[1]

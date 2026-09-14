@@ -81,6 +81,86 @@ describe('initializeApp', () => {
     expect(sentPrompt.id).toBe('pod-2');
   });
 
+  it('resolves pod with hyphen when prompt uses spaces ("focus on batch ingestor")', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'prod',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                { id: 'pod-batch-1', name: 'batch-ingestor', status: 'Pending' },
+                { id: 'pod-pay-1', name: 'payment-service', status: 'Running' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+
+    let sentPrompt = null;
+    app.ws.sendPrompt = (id, uri, prompt) => {
+      sentPrompt = { id, uri, prompt };
+    };
+
+    // User types "focus on batch ingestor" (spaces instead of hyphen)
+    app.hud.onPromptSubmit('focus on batch ingestor', null, null);
+
+    expect(app.hud.selectedPod).toBeDefined();
+    expect(app.hud.selectedPod.name).toBe('batch-ingestor');
+    expect(app.controls.selectedPod.name).toBe('batch-ingestor');
+    expect(sentPrompt).toBeDefined();
+    expect(sentPrompt.id).toBe('pod-batch-1');
+  });
+
+  it('initializes clusters with overview and switches cleanly', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'production-us-central1',
+          location: 'us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [{ id: 'p1', name: 'frontend', status: 'Running' }],
+            },
+          ],
+        },
+        {
+          name: 'staging-us-east1',
+          location: 'us-east1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [{ id: 'p2', name: 'batch-ingestor', status: 'Pending' }],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+
+    const select = document.getElementById('hud-cluster-select');
+    expect(select).toBeDefined();
+    expect(select.value).toBe('__overview__');
+
+    // Select the first cluster explicitly
+    select.value = 'production-us-central1';
+    app.hud.onClusterSelect('production-us-central1');
+    const statusMsgEl = document.getElementById('hud-status-msg');
+    expect(statusMsgEl.textContent).toContain('production-us-central1');
+
+    // Reset view restores overview
+    app.hud.onResetView();
+    expect(select.value).toBe('__overview__');
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

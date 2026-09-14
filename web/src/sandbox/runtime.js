@@ -234,6 +234,111 @@ const SHADOW_CSS = `
   margin-bottom: 4px;
 }
 
+.health-card {
+  background: #202622;
+  border: 1px solid #5f6368;
+  border-left: 4px solid #81c995;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.health-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.health-pill {
+  background: rgba(129, 201, 149, 0.2);
+  color: #81c995;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.health-title {
+  font-weight: 600;
+  color: #e8eaed;
+  font-size: 13px;
+}
+
+.health-body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #bdc1c6;
+}
+
+.pending-card {
+  background: #262420;
+  border: 1px solid #5f6368;
+  border-left: 4px solid #fdd663;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.pending-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.pending-pill {
+  background: rgba(253, 214, 99, 0.2);
+  color: #fdd663;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.pending-title {
+  font-weight: 600;
+  color: #e8eaed;
+  font-size: 13px;
+}
+
+.pending-body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #bdc1c6;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.metric-box {
+  background: #303134;
+  border: 1px solid #3c4043;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metric-box-val {
+  font-size: 14px;
+  font-weight: 700;
+  color: #8ab4f8;
+  font-family: monospace;
+}
+
+.metric-box-lbl {
+  font-size: 10.5px;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
 .remediation-header {
   font-size: 11px;
   font-weight: 700;

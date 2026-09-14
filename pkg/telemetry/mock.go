@@ -16,6 +16,7 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -38,6 +39,9 @@ func (m *MockProvider) QueryLogs(_ context.Context, resourceURI string, limit in
 
 	if strings.Contains(resourceURI, "payment-service") {
 		return m.failingPaymentLogs(resourceURI, limit), nil
+	}
+	if strings.Contains(resourceURI, "batch-ingestor") {
+		return m.pendingBatchLogs(resourceURI, limit), nil
 	}
 
 	return m.healthyServiceLogs(resourceURI, limit), nil
@@ -143,7 +147,7 @@ func (m *MockProvider) failingPaymentLogs(resourceURI string, limit int) *api.Te
 	}
 }
 
-func (m *MockProvider) healthyServiceLogs(resourceURI string, limit int) *api.TelemetryData {
+func (m *MockProvider) pendingBatchLogs(resourceURI string, limit int) *api.TelemetryData {
 	now := time.Now().UTC()
 	t := func(offsetSeconds int) string {
 		return now.Add(time.Duration(-offsetSeconds) * time.Second).Format("2006-01-02T15:04:05.000Z")
@@ -151,15 +155,73 @@ func (m *MockProvider) healthyServiceLogs(resourceURI string, limit int) *api.Te
 
 	rawLogs := []api.LogEntry{
 		{
+			Timestamp: t(120),
+			Severity:  "INFO",
+			Message:   "Pod scheduled event received for batch-ingestor-79d5f-x9pl2",
+			Source:    "default-scheduler",
+		},
+		{
+			Timestamp: t(100),
+			Severity:  "WARNING",
+			Message:   "0/6 nodes are available: 3 Insufficient cpu, 3 node(s) had untolerated taint {node.kubernetes.io/unreachable: }",
+			Source:    "default-scheduler",
+		},
+		{
+			Timestamp: t(60),
+			Severity:  "WARNING",
+			Message:   "Cluster autoscaler: pod didn't trigger scale-up (it wouldn't fit if a new node is added)",
+			Source:    "cluster-autoscaler",
+		},
+		{
+			Timestamp: t(20),
+			Severity:  "INFO",
+			Message:   "Cluster autoscaler triggered scale-up for nodepool-compute-highmem (target: +2 nodes, awaiting GCE instance provisioning)",
+			Source:    "cluster-autoscaler",
+		},
+	}
+
+	if len(rawLogs) > limit {
+		rawLogs = rawLogs[len(rawLogs)-limit:]
+	}
+
+	return &api.TelemetryData{
+		ResourceURI: resourceURI,
+		PodID:       "pod-batch-ingestor-79d5f",
+		Metrics: map[string]string{
+			"status":            "Pending",
+			"reason":            "InsufficientResources",
+			"pending_duration":  "4m32s",
+			"cpu_requested":     "4000m",
+			"memory_requested":  "8Gi",
+			"autoscaler_status": "ScalingUp (+2 nodes)",
+		},
+		Logs: rawLogs,
+	}
+}
+
+func (m *MockProvider) healthyServiceLogs(resourceURI string, limit int) *api.TelemetryData {
+	now := time.Now().UTC()
+	t := func(offsetSeconds int) string {
+		return now.Add(time.Duration(-offsetSeconds) * time.Second).Format("2006-01-02T15:04:05.000Z")
+	}
+
+	podName := "service"
+	parts := strings.Split(resourceURI, "/")
+	if len(parts) > 0 && parts[len(parts)-1] != "" {
+		podName = parts[len(parts)-1]
+	}
+
+	rawLogs := []api.LogEntry{
+		{
 			Timestamp: t(60),
 			Severity:  "INFO",
-			Message:   "Service health check OK (200 OK, latency=4ms)",
+			Message:   fmt.Sprintf("Service health check OK (200 OK, latency=4ms, target=%s)", podName),
 			Source:    "healthz.go:19",
 		},
 		{
 			Timestamp: t(40),
 			Severity:  "INFO",
-			Message:   "Handled 142 HTTP requests in last 30s window (p99=12ms, errors=0)",
+			Message:   fmt.Sprintf("Handled 142 HTTP requests in last 30s window (p99=12ms, errors=0, service=%s)", podName),
 			Source:    "metrics.go:55",
 		},
 		{
@@ -176,12 +238,14 @@ func (m *MockProvider) healthyServiceLogs(resourceURI string, limit int) *api.Te
 
 	return &api.TelemetryData{
 		ResourceURI: resourceURI,
-		PodID:       "pod-healthy-service",
+		PodID:       "pod-" + podName,
 		Metrics: map[string]string{
 			"status":   "Running",
 			"restarts": "0",
 			"cpu":      "120m",
 			"memory":   "256Mi",
+			"uptime":   "9d 14h",
+			"p99":      "12ms",
 		},
 		Logs: rawLogs,
 	}

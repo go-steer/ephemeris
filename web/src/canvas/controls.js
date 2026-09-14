@@ -234,12 +234,18 @@ export class CameraControls {
     this.selectedPod = mesh.userData.pod;
     mesh.scale.set(1.25, 1.25, 1.25);
 
-    // Position reticle around the mesh
-    this.reticleGroup.position.copy(mesh.position);
+    // Position reticle around the mesh in absolute world space
+    const meshPos = new THREE.Vector3();
+    if (typeof mesh.getWorldPosition === 'function') {
+      mesh.getWorldPosition(meshPos);
+    } else {
+      meshPos.copy(mesh.position);
+    }
+
+    this.reticleGroup.position.copy(meshPos);
     this.reticleGroup.visible = true;
 
     // Set smooth camera transition target cleanly centered on pod
-    const meshPos = mesh.position.clone();
     this.targetLookAt.copy(meshPos);
     this.targetLookAt.y += 0.4;
 

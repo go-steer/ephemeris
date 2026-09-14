@@ -110,7 +110,25 @@ func (a *Agent) generateWithVertex(ctx context.Context, userPrompt string, telem
 	return resp.Candidates[0].Content.Parts[0].Text, nil
 }
 
-func (a *Agent) generateFallback(_ string, _ *api.TelemetryData) string {
+func (a *Agent) generateFallback(prompt string, telemetry *api.TelemetryData) string {
+	status := "Running"
+	if telemetry != nil && telemetry.Metrics != nil {
+		if s, ok := telemetry.Metrics["status"]; ok && s != "" {
+			status = s
+		}
+	}
+
+	switch status {
+	case "CrashLoopBackOff", "Failed":
+		return a.generateCrashTriageFallback(prompt, telemetry)
+	case "Pending":
+		return a.generatePendingDiagnosticsFallback(prompt, telemetry)
+	default:
+		return a.generateHealthyCockpitFallback(prompt, telemetry)
+	}
+}
+
+func (a *Agent) generateCrashTriageFallback(_ string, _ *api.TelemetryData) string {
 	b := "`"
 	return "// ArrowJS Ephemeral SRE Incident Panel with Root Cause & Remediation\n" +
 		"const state = reactive({\n" +
@@ -273,6 +291,323 @@ func (a *Agent) generateFallback(_ string, _ *api.TelemetryData) string {
         <input
           type="text"
           placeholder="Filter logs (regex or string)..."
+          class="search-input"
+          @input="${(e) => { state.search = e.target.value; }}"
+        />
+      </div>
+
+      <div class="log-container">
+        ${() => {
+          const filtered = getFilteredLogs();
+          if (filtered.length === 0) {
+            return html` + b + `<div class="empty-state">No log entries match the selected filter.</div>` + b + `;
+          }
+          return filtered.map(log => html` + b + `
+            <div class="${() => 'log-row ' + log.severity.toLowerCase() + (state.selectedLog === log ? ' selected' : '')}" @click="${() => { state.selectedLog = (state.selectedLog === log ? null : log); }}">
+              <span class="log-time">${log.timestamp ? log.timestamp.substring(11, 23) : ''}</span>
+              <span class="log-sev">[${log.severity}]</span>
+              <span class="log-msg">${log.message}</span>
+            </div>
+          ` + b + `);
+        }}
+      </div>
+    </div>
+  </div>
+` + b + ";\n\ntemplate(container);\n"
+}
+
+func (a *Agent) generatePendingDiagnosticsFallback(_ string, _ *api.TelemetryData) string {
+	b := "`"
+	return "// ArrowJS Ephemeral SRE Pending Workload Diagnostics\n" +
+		"const state = reactive({\n" +
+		"  tab: 'DIAGNOSTICS',\n" +
+		"  filter: 'ALL',\n" +
+		"  search: '',\n" +
+		"  selectedLog: null,\n" +
+		"  logs: data.logs || [],\n" +
+		"  actionInProgress: false,\n" +
+		"  actionName: '',\n" +
+		"  actionSuccess: false,\n" +
+		"  currentStatus: (data.metrics && data.metrics.status) || 'Pending'\n" +
+		"});\n\n" +
+		"function getFilteredLogs() {\n" +
+		"  return state.logs.filter(log => {\n" +
+		"    const matchesFilter = state.filter === 'ALL' || log.severity === state.filter;\n" +
+		"    const matchesSearch = !state.search || log.message.toLowerCase().includes(state.search.toLowerCase());\n" +
+		"    return matchesFilter && matchesSearch;\n" +
+		"  });\n" +
+		"}\n\n" +
+		"function runAction(actionName) {\n" +
+		"  state.actionInProgress = true;\n" +
+		"  state.actionName = actionName;\n" +
+		"  setTimeout(() => {\n" +
+		"    state.actionInProgress = false;\n" +
+		"    state.actionSuccess = true;\n" +
+		"    state.currentStatus = 'Running';\n" +
+		"    if (container && container.dispatchEvent) {\n" +
+		"      container.dispatchEvent(new CustomEvent('ephemeris-remediated', {\n" +
+		"        bubbles: true,\n" +
+		"        composed: true,\n" +
+		"        detail: { podId: data.pod_id || 'batch-ingestor', status: 'Running' }\n" +
+		"      }));\n" +
+		"    }\n" +
+		"  }, 800);\n" +
+		"}\n\n" +
+		"const template = html" + b + `
+  <div class="ephemeris-widget">
+    <div class="widget-header">
+      <div class="title-group">
+        <span class="${() => 'badge status-' + state.currentStatus.toLowerCase()}">${() => state.currentStatus}</span>
+        <span class="resource-title">${data.pod_id || 'batch-ingestor'}</span>
+      </div>
+      <div class="stats-group">
+        <span class="stat-chip">Reason: <strong>${(data.metrics && data.metrics.reason) || 'InsufficientResources'}</strong></span>
+        <span class="stat-chip">Pending: <strong>${(data.metrics && data.metrics.pending_duration) || '4m32s'}</strong></span>
+        <span class="stat-chip">CPU Req: <strong>${(data.metrics && data.metrics.cpu_requested) || '4000m'}</strong></span>
+        <span class="stat-chip">Mem Req: <strong>${(data.metrics && data.metrics.memory_requested) || '8Gi'}</strong></span>
+      </div>
+    </div>
+
+    <div class="nav-tabs">
+      <button class="${() => state.tab === 'DIAGNOSTICS' ? 'tab-btn active' : 'tab-btn'}" @click="${() => { state.tab = 'DIAGNOSTICS'; }}">🔍 Scheduling Diagnostics</button>
+      <button class="${() => state.tab === 'LOGS' ? 'tab-btn active' : 'tab-btn'}" @click="${() => { state.tab = 'LOGS'; }}">📋 Scheduler Events (${() => state.logs.length})</button>
+    </div>
+
+    <div class="${() => state.tab === 'DIAGNOSTICS' ? 'triage-view' : 'triage-view hidden'}">
+      <div class="${() => state.actionSuccess ? 'remediation-success-banner' : 'remediation-success-banner hidden'}">
+        <div class="success-header">
+          <span class="success-icon">✓</span>
+          <span class="success-title">${() => state.actionName} Executed</span>
+        </div>
+        <p class="success-desc">Node capacity assigned. Pod scheduled on new node pool instance and transitioned to <strong>Running</strong>.</p>
+        <div class="success-actions">
+          <button class="btn-action primary" @click="${() => { state.actionSuccess = false; }}">Done</button>
+        </div>
+      </div>
+
+      <div class="${() => (!state.actionSuccess && state.actionInProgress) ? 'remediation-in-progress' : 'remediation-in-progress hidden'}">
+        <div class="progress-title">
+          <span class="spinner-inline"></span>
+          ${() => state.actionName} in progress...
+        </div>
+        <p style="font-size: 11.5px; color: #9aa0a6;">Provisioning node pool capacity and binding pod volume claims...</p>
+      </div>
+
+      <div class="${() => (!state.actionSuccess && !state.actionInProgress) ? 'triage-details' : 'triage-details hidden'}">
+        <div class="pending-card">
+          <div class="pending-header">
+            <span class="pending-pill">SCHEDULING BLOCKED</span>
+            <span class="pending-title">0/6 Nodes Available: Insufficient CPU & Memory Quota</span>
+          </div>
+          <div class="pending-body">
+            <p>The default Kubernetes scheduler could not place <code>${data.pod_id || 'batch-ingestor'}</code> because cluster nodes lack <strong>4000m CPU</strong> allocatable headroom.</p>
+          </div>
+        </div>
+
+        <div class="blast-radius-card">
+          <div class="blast-title">⚡ GKE Cluster Autoscaler Active</div>
+          <p>Autoscaler status: <strong>${(data.metrics && data.metrics.autoscaler_status) || 'ScalingUp (+2 nodes)'}</strong>. Awaiting GCE compute instance initialization (~30s remaining).</p>
+        </div>
+
+        <div class="remediation-header">Recommended Actions:</div>
+
+        <div class="actions-list">
+          <div class="action-card recommended">
+            <div class="action-meta">
+              <div class="action-badge-row">
+                <span class="rec-badge">FAST-TRACK</span>
+                <span class="rec-est">Est: ~1s</span>
+              </div>
+              <div class="action-name">Trigger Priority Node Scale-Up</div>
+              <div class="action-detail">Bypasses autoscaler evaluation backoff and immediately requests warm node capacity.</div>
+            </div>
+            <button class="remediation-btn primary" @click="${() => runAction('Priority Node Scale-Up')}">
+              ⚡ Trigger Fast-Track
+            </button>
+          </div>
+
+          <div class="action-card">
+            <div class="action-meta">
+              <div class="action-name">Reduce CPU Request to 2000m</div>
+              <div class="action-detail">Patches pod spec requests so workload can immediately fit into existing node capacity.</div>
+            </div>
+            <button class="remediation-btn secondary" @click="${() => runAction('Reduce CPU Request')}">
+              ⚡ Patch CPU Request
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="${() => state.tab === 'LOGS' ? 'logs-view' : 'logs-view hidden'}">
+      <div class="filter-bar">
+        <div class="filter-buttons">
+          <button class="${() => state.filter === 'ALL' ? 'btn active' : 'btn'}" @click="${() => { state.filter = 'ALL'; }}">ALL</button>
+          <button class="${() => state.filter === 'WARNING' ? 'btn active warning' : 'btn'}" @click="${() => { state.filter = 'WARNING'; }}">WARN</button>
+          <button class="${() => state.filter === 'INFO' ? 'btn active info' : 'btn'}" @click="${() => { state.filter = 'INFO'; }}">INFO</button>
+        </div>
+        <input
+          type="text"
+          placeholder="Filter logs..."
+          class="search-input"
+          @input="${(e) => { state.search = e.target.value; }}"
+        />
+      </div>
+
+      <div class="log-container">
+        ${() => {
+          const filtered = getFilteredLogs();
+          if (filtered.length === 0) {
+            return html` + b + `<div class="empty-state">No log entries match the selected filter.</div>` + b + `;
+          }
+          return filtered.map(log => html` + b + `
+            <div class="${() => 'log-row ' + log.severity.toLowerCase() + (state.selectedLog === log ? ' selected' : '')}" @click="${() => { state.selectedLog = (state.selectedLog === log ? null : log); }}">
+              <span class="log-time">${log.timestamp ? log.timestamp.substring(11, 23) : ''}</span>
+              <span class="log-sev">[${log.severity}]</span>
+              <span class="log-msg">${log.message}</span>
+            </div>
+          ` + b + `);
+        }}
+      </div>
+    </div>
+  </div>
+` + b + ";\n\ntemplate(container);\n"
+}
+
+func (a *Agent) generateHealthyCockpitFallback(_ string, _ *api.TelemetryData) string {
+	b := "`"
+	return "// ArrowJS Ephemeral SRE Service Health & Observability Cockpit\n" +
+		"const state = reactive({\n" +
+		"  tab: 'HEALTH',\n" +
+		"  filter: 'ALL',\n" +
+		"  search: '',\n" +
+		"  selectedLog: null,\n" +
+		"  logs: data.logs || [],\n" +
+		"  actionInProgress: false,\n" +
+		"  actionName: '',\n" +
+		"  actionSuccess: false,\n" +
+		"  currentStatus: (data.metrics && data.metrics.status) || 'Running'\n" +
+		"});\n\n" +
+		"function getFilteredLogs() {\n" +
+		"  return state.logs.filter(log => {\n" +
+		"    const matchesFilter = state.filter === 'ALL' || log.severity === state.filter;\n" +
+		"    const matchesSearch = !state.search || log.message.toLowerCase().includes(state.search.toLowerCase());\n" +
+		"    return matchesFilter && matchesSearch;\n" +
+		"  });\n" +
+		"}\n\n" +
+		"function runAction(actionName) {\n" +
+		"  state.actionInProgress = true;\n" +
+		"  state.actionName = actionName;\n" +
+		"  setTimeout(() => {\n" +
+		"    state.actionInProgress = false;\n" +
+		"    state.actionSuccess = true;\n" +
+		"  }, 800);\n" +
+		"}\n\n" +
+		"const template = html" + b + `
+  <div class="ephemeris-widget">
+    <div class="widget-header">
+      <div class="title-group">
+        <span class="${() => 'badge status-' + state.currentStatus.toLowerCase()}">${() => state.currentStatus}</span>
+        <span class="resource-title">${data.pod_id || 'service'}</span>
+      </div>
+      <div class="stats-group">
+        <span class="stat-chip">Restarts: <strong>${(data.metrics && data.metrics.restarts) || '0'}</strong></span>
+        <span class="stat-chip">CPU: <strong>${(data.metrics && data.metrics.cpu) || '120m'}</strong></span>
+        <span class="stat-chip">Mem: <strong>${(data.metrics && data.metrics.memory) || '256Mi'}</strong></span>
+        <span class="stat-chip">Uptime: <strong>${(data.metrics && data.metrics.uptime) || '9d 14h'}</strong></span>
+      </div>
+    </div>
+
+    <div class="nav-tabs">
+      <button class="${() => state.tab === 'HEALTH' ? 'tab-btn active' : 'tab-btn'}" @click="${() => { state.tab = 'HEALTH'; }}">📊 Service Health & Telemetry</button>
+      <button class="${() => state.tab === 'LOGS' ? 'tab-btn active' : 'tab-btn'}" @click="${() => { state.tab = 'LOGS'; }}">📋 Live Logs (${() => state.logs.length})</button>
+    </div>
+
+    <div class="${() => state.tab === 'HEALTH' ? 'triage-view' : 'triage-view hidden'}">
+      <div class="${() => state.actionSuccess ? 'remediation-success-banner' : 'remediation-success-banner hidden'}">
+        <div class="success-header">
+          <span class="success-icon">✓</span>
+          <span class="success-title">${() => state.actionName} Completed</span>
+        </div>
+        <p class="success-desc">Operational task executed cleanly. Service continues serving traffic with zero dropped connections.</p>
+        <div class="success-actions">
+          <button class="btn-action primary" @click="${() => { state.actionSuccess = false; }}">Done</button>
+        </div>
+      </div>
+
+      <div class="${() => (!state.actionSuccess && state.actionInProgress) ? 'remediation-in-progress' : 'remediation-in-progress hidden'}">
+        <div class="progress-title">
+          <span class="spinner-inline"></span>
+          Executing ${() => state.actionName}...
+        </div>
+        <p style="font-size: 11.5px; color: #9aa0a6;">Performing graceful rolling cycle, draining active connections and verifying health probes...</p>
+      </div>
+
+      <div class="${() => (!state.actionSuccess && !state.actionInProgress) ? 'triage-details' : 'triage-details hidden'}">
+        <div class="health-card">
+          <div class="health-header">
+            <span class="health-pill">HEALTHY</span>
+            <span class="health-title">Service Operational & Healthy</span>
+          </div>
+          <div class="health-body">
+            <p>All Kubernetes health probes (Liveness, Readiness, Startup) reporting HTTP 200 OK. No crash loops, panics, or unhandled exceptions detected in the active telemetry window.</p>
+          </div>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <span class="metric-box-val">0.00%</span>
+            <span class="metric-box-lbl">Error Rate (HTTP 5xx)</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-box-val">${(data.metrics && data.metrics.p99) || '12ms'}</span>
+            <span class="metric-box-lbl">Latency (p99)</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-box-val">142 req/s</span>
+            <span class="metric-box-lbl">Ingress Rate</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-box-val">100.0%</span>
+            <span class="metric-box-lbl">SLO Compliance</span>
+          </div>
+        </div>
+
+        <div class="remediation-header">Operational Actions:</div>
+
+        <div class="actions-list">
+          <div class="action-card">
+            <div class="action-meta">
+              <div class="action-name">Graceful Rolling Restart</div>
+              <div class="action-detail">Performs zero-downtime rolling update to refresh container runtime worker state.</div>
+            </div>
+            <button class="remediation-btn secondary" @click="${() => runAction('Graceful Rolling Restart')}">
+              🔄 Rolling Restart
+            </button>
+          </div>
+
+          <div class="action-card">
+            <div class="action-meta">
+              <div class="action-name">Trigger Synthetic Health Probe</div>
+              <div class="action-detail">Runs on-demand synthetic gRPC & HTTP health check validation against pods.</div>
+            </div>
+            <button class="remediation-btn secondary" @click="${() => runAction('Synthetic Deep Health Probe')}">
+              🩺 Probe Health
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="${() => state.tab === 'LOGS' ? 'logs-view' : 'logs-view hidden'}">
+      <div class="filter-bar">
+        <div class="filter-buttons">
+          <button class="${() => state.filter === 'ALL' ? 'btn active' : 'btn'}" @click="${() => { state.filter = 'ALL'; }}">ALL</button>
+          <button class="${() => state.filter === 'INFO' ? 'btn active info' : 'btn'}" @click="${() => { state.filter = 'INFO'; }}">INFO</button>
+        </div>
+        <input
+          type="text"
+          placeholder="Filter logs..."
           class="search-input"
           @input="${(e) => { state.search = e.target.value; }}"
         />

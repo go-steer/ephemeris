@@ -96,6 +96,32 @@ describe('CameraControls', () => {
     expect(controls.reticleGroup.position.x).toBe(10);
   });
 
+  it('focuses camera correctly using world coordinates when mesh is child of an offset group', () => {
+    const parentGroup = new THREE.Group();
+    parentGroup.position.set(40, 2, 60);
+    scene.add(parentGroup);
+
+    const childMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 1.4, 1.2),
+      new THREE.MeshBasicMaterial()
+    );
+    childMesh.position.set(0, 0.7, 0);
+    childMesh.userData = {
+      type: 'pod',
+      pod: { id: 'pod-batch', name: 'batch-ingestor', status: 'Pending' },
+    };
+    parentGroup.add(childMesh);
+    parentGroup.updateMatrixWorld(true);
+
+    controls.focusOnMesh(childMesh);
+
+    expect(controls.targetLookAt.x).toBeCloseTo(40);
+    expect(controls.targetLookAt.y).toBeCloseTo(3.1);
+    expect(controls.targetLookAt.z).toBeCloseTo(60);
+    expect(controls.targetCameraPos.x).toBeCloseTo(45.5);
+    expect(controls.targetCameraPos.z).toBeCloseTo(67.0);
+  });
+
   it('focuses camera smoothly on a cluster position', () => {
     const clusterPos = new THREE.Vector3(48, 0, 48);
     controls.focusOnCluster(clusterPos);

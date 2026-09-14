@@ -64,6 +64,11 @@ export function initializeApp() {
   hud.onResetView = () => {
     controls.resetView();
     hud.setSelectedPod(null);
+    const select = document.getElementById('hud-cluster-select');
+    if (select) {
+      select.value = '__overview__';
+      hud.onClusterSelect('__overview__', true);
+    }
   };
 
   // Wire Camera Mode toggle (Orbit vs Pan)
@@ -83,13 +88,22 @@ export function initializeApp() {
   const findTargetPodFromPrompt = (promptText, activePod, topologyData) => {
     if (!topologyData || !topologyData.clusters) return null;
     const text = (promptText || '').toLowerCase();
+    const cleanText = text.replace(/[-_]/g, ' ');
 
-    // 1. Check for specific pod or service name mentioned in the prompt
+    // 1. Check for specific pod or service name mentioned in the prompt (with hyphen/space normalization)
     for (const cluster of topologyData.clusters) {
       for (const ns of cluster.namespaces || []) {
         for (const p of ns.pods || []) {
           const pName = (p.name || '').toLowerCase();
-          if (text.includes(pName) || (p.id && text.includes(p.id.toLowerCase()))) {
+          const cleanPName = pName.replace(/[-_]/g, ' ');
+          const pId = (p.id || '').toLowerCase();
+          const cleanPId = pId.replace(/[-_]/g, ' ');
+
+          if (
+            text.includes(pName) ||
+            cleanText.includes(cleanPName) ||
+            (pId && (text.includes(pId) || cleanText.includes(cleanPId)))
+          ) {
             return { pod: p, meta: { namespaceName: ns.name, clusterName: cluster.name } };
           }
         }
@@ -157,15 +171,40 @@ export function initializeApp() {
   };
 
   // Wire Cluster Switcher -> Smooth 3D Navigation
-  hud.onClusterSelect = (clusterName) => {
+  hud.onClusterSelect = (clusterName, skipCameraFocus = false) => {
     if (!currentTopologyData || !currentTopologyData.clusters) return;
+
+    if (clusterName === '__overview__') {
+      if (!skipCameraFocus) {
+        controls.resetView();
+      }
+      let running = 0;
+      let crash = 0;
+      let pending = 0;
+      currentTopologyData.clusters.forEach((c) => {
+        (c.namespaces || []).forEach((ns) => {
+          (ns.pods || []).forEach((p) => {
+            if (p.status === 'Running') running++;
+            else if (p.status === 'CrashLoopBackOff' || p.status === 'Failed') crash++;
+            else if (p.status === 'Pending') pending++;
+          });
+        });
+      });
+
+      hud.setPodStats(running, crash, pending);
+      hud.setClusterInfo('Multi-Cluster Mesh', `${currentTopologyData.clusters.length} Clusters`);
+      hud.setStatusMessage('Viewing multi-cluster topology mesh overview.', false);
+      return;
+    }
 
     const cluster = currentTopologyData.clusters.find((c) => c.name === clusterName);
     if (!cluster) return;
 
-    const pos = topologyMesh.getClusterPosition(clusterName);
-    if (pos) {
-      controls.focusOnCluster(pos);
+    if (!skipCameraFocus) {
+      const pos = topologyMesh.getClusterPosition(clusterName);
+      if (pos) {
+        controls.focusOnCluster(pos);
+      }
     }
 
     let running = 0;
@@ -180,6 +219,7 @@ export function initializeApp() {
     });
 
     hud.setPodStats(running, crash, pending);
+    hud.setClusterInfo(cluster.name, cluster.location || 'global');
     hud.setStatusMessage(
       `Viewing cluster ${cluster.name} [${cluster.location || 'global'}].`,
       false
@@ -241,12 +281,12 @@ export function initializeApp() {
       return;
     }
 
-    // Switch cluster if target pod is in a different cluster
+    // Switch cluster if target pod is in a different cluster (skip cluster camera refocus)
     if (targetMeta && targetMeta.clusterName) {
       const select = document.getElementById('hud-cluster-select');
       if (select && select.value !== targetMeta.clusterName) {
         select.value = targetMeta.clusterName;
-        hud.onClusterSelect(targetMeta.clusterName);
+        hud.onClusterSelect(targetMeta.clusterName, true);
       }
     }
 
@@ -292,28 +332,11 @@ export function initializeApp() {
 
     if (topologyData && topologyData.clusters && topologyData.clusters.length > 0) {
       const clusters = topologyData.clusters;
-      const primaryCluster = clusters[0];
-      hud.setClusters(clusters, primaryCluster.name);
+      hud.setClusters(clusters, '__overview__');
+      hud.onClusterSelect('__overview__', true);
 
-      let running = 0;
-      let crash = 0;
-      let pending = 0;
+      // Auto-focus the failing pod after initial load if available
       let failingPodMesh = null;
-
-      (primaryCluster.namespaces || []).forEach((ns) => {
-        (ns.pods || []).forEach((p) => {
-          if (p.status === 'Running') running++;
-          else if (p.status === 'CrashLoopBackOff' || p.status === 'Failed') {
-            crash++;
-          } else if (p.status === 'Pending') pending++;
-        });
-      });
-
-      hud.setPodStats(running, crash, pending);
-      hud.setStatusMessage(
-        `Connected to ${clusters.length} GKE clusters: ${running} running, ${crash} crashing, ${pending} pending in primary.`,
-        false
-      );
 
       // Auto-focus the failing pod after initial load if available
       for (const mesh of topologyMesh.getInteractiveObjects()) {

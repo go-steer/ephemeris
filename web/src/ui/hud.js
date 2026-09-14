@@ -178,6 +178,15 @@ export class HUDOverlay {
     if (!select || clusters.length === 0) return;
 
     select.innerHTML = '';
+
+    const overviewOpt = document.createElement('option');
+    overviewOpt.value = '__overview__';
+    overviewOpt.textContent = `🌐 Multi-Cluster Overview (${clusters.length} Clusters)`;
+    if (activeClusterName === '__overview__') {
+      overviewOpt.selected = true;
+    }
+    select.appendChild(overviewOpt);
+
     clusters.forEach((c) => {
       let alerts = 0;
       (c.namespaces || []).forEach((ns) => {
