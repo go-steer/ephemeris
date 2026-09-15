@@ -16,7 +16,9 @@
 FROM node:24-alpine AS web-builder
 WORKDIR /workspace
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN sed -i 's|http://airlock-proxy.uplink.goog:999/npm/artifact-foundry-prod/ah-3p-staging-npm/|https://registry.npmjs.org/|g' package-lock.json && \
+    npm config set registry https://registry.npmjs.org/ && \
+    npm ci
 COPY vite.config.js ./
 COPY web/ ./web/
 RUN npx vite build
@@ -24,6 +26,7 @@ RUN npx vite build
 # Stage 2: Build Go single-binary daemon embedding web assets
 FROM golang:1.25-alpine AS go-builder
 WORKDIR /workspace
+ENV GOPROXY=https://proxy.golang.org,direct
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
