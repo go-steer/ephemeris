@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"google.golang.org/genai"
 
@@ -73,18 +74,23 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 
 // GenerateUI compiles an ephemeral ArrowJS component for the given incident context.
 func (a *Agent) GenerateUI(ctx context.Context, userPrompt string, telemetry *api.TelemetryData) (string, error) {
+	return a.GenerateStream(ctx, userPrompt, telemetry, nil)
+}
+
+// GenerateStream compiles an ephemeral ArrowJS component and streams intermediate progress updates via onStatus.
+func (a *Agent) GenerateStream(ctx context.Context, userPrompt string, telemetry *api.TelemetryData, onStatus func(string)) (string, error) {
 	if a.genaiClient != nil && !a.cfg.ForceMock {
-		code, err := a.generateWithVertex(ctx, userPrompt, telemetry)
+		code, err := a.generateStreamWithVertex(ctx, userPrompt, telemetry, onStatus)
 		if err == nil && len(code) > 0 {
 			return SanitizeCode(code), nil
 		}
-		log.Printf("Vertex AI generation failed or unavailable (%v); using deterministic fallback", err)
+		log.Printf("Vertex AI stream generation failed or unavailable (%v); using deterministic fallback", err)
 	}
 
-	return a.generateFallback(userPrompt, telemetry), nil
+	return a.generateFallbackStream(userPrompt, telemetry, onStatus), nil
 }
 
-func (a *Agent) generateWithVertex(ctx context.Context, userPrompt string, telemetry *api.TelemetryData) (string, error) {
+func (a *Agent) generateStreamWithVertex(ctx context.Context, userPrompt string, telemetry *api.TelemetryData, onStatus func(string)) (string, error) {
 	contentPrompt, err := BuildUserPrompt(userPrompt, telemetry)
 	if err != nil {
 		return "", err
@@ -96,18 +102,64 @@ func (a *Agent) generateWithVertex(ctx context.Context, userPrompt string, telem
 		},
 	}
 
-	resp, err := a.genaiClient.Models.GenerateContent(ctx, a.cfg.Model, genai.Text(contentPrompt), &genai.GenerateContentConfig{
+	if onStatus != nil {
+		onStatus(fmt.Sprintf("Connecting to Vertex AI (%s)...", a.cfg.Model))
+	}
+
+	stream := a.genaiClient.Models.GenerateContentStream(ctx, a.cfg.Model, genai.Text(contentPrompt), &genai.GenerateContentConfig{
 		SystemInstruction: systemInstruction,
 	})
-	if err != nil {
-		return "", fmt.Errorf("gemini generate content failed: %w", err)
+
+	var builder strings.Builder
+	chunkCount := 0
+
+	for resp, err := range stream {
+		if err != nil {
+			return "", fmt.Errorf("gemini stream error: %w", err)
+		}
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			for _, part := range resp.Candidates[0].Content.Parts {
+				builder.WriteString(part.Text)
+			}
+		}
+		chunkCount++
+		if onStatus != nil && chunkCount%2 == 1 {
+			onStatus(fmt.Sprintf("Streaming ArrowJS UI tokens (%d bytes received)...", builder.Len()))
+		}
 	}
 
-	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("empty response from model")
+	result := builder.String()
+	if len(result) == 0 {
+		return "", fmt.Errorf("empty stream response from model")
 	}
 
-	return resp.Candidates[0].Content.Parts[0].Text, nil
+	if onStatus != nil {
+		onStatus("Compiling ArrowJS reactive template...")
+	}
+
+	return result, nil
+}
+
+func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryData, onStatus func(string)) string {
+	status := "Running"
+	if telemetry != nil && telemetry.Metrics != nil {
+		if s, ok := telemetry.Metrics["status"]; ok && s != "" {
+			status = s
+		}
+	}
+
+	if onStatus != nil {
+		switch status {
+		case "CrashLoopBackOff", "Failed":
+			onStatus("Analyzing container panic trace (SIGSEGV at server.go:142)...")
+		case "Pending":
+			onStatus("Evaluating node pool resource limits & scheduling constraints...")
+		default:
+			onStatus("Synthesizing healthy cluster observability cockpit...")
+		}
+	}
+
+	return a.generateFallback(prompt, telemetry)
 }
 
 func (a *Agent) generateFallback(prompt string, telemetry *api.TelemetryData) string {

@@ -197,8 +197,13 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 			Message: "Compiling ArrowJS reactive UI via Gemini...",
 		})
 
-		// Step 4: Generate ArrowJS reactive UI
-		code, err := s.agent.GenerateUI(ctx, msg.Prompt, telem)
+		// Step 4: Generate ArrowJS reactive UI with progressive streaming status updates
+		code, err := s.agent.GenerateStream(ctx, msg.Prompt, telem, func(statusMsg string) {
+			_ = conn.WriteJSON(api.ServerMessage{
+				Type:    api.MsgTypeStatus,
+				Message: statusMsg,
+			})
+		})
 		if err != nil {
 			s.sendError(conn, fmt.Sprintf("UI compilation failed: %v", err))
 			return

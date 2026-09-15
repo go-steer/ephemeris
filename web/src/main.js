@@ -403,6 +403,8 @@ export function initializeApp() {
 
   ws.onStatus = (statusMsg) => {
     hud.setStatusMessage(statusMsg, true);
+    const activePodName = hud.selectedPod ? hud.selectedPod.name : 'Pod';
+    panel.showStreamingProgress(statusMsg, activePodName);
   };
 
   ws.onUIComponent = (msg) => {

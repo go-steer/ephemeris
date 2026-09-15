@@ -296,6 +296,26 @@ describe('initializeApp', () => {
     expect(app.hud.selectedPod).toBeNull();
   });
 
+  it('displays live progressive streaming in IncidentPanel when ws.onStatus arrives', () => {
+    const app = initializeApp();
+    app.hud.setSelectedPod(
+      { id: 'pod-payment', name: 'payment-service', status: 'CrashLoopBackOff' },
+      { clusterName: 'production-us-central1', namespaceName: 'default' }
+    );
+
+    expect(app.panel.isVisible).toBe(false);
+
+    // Simulate streaming status message from backend
+    app.ws.onStatus('Streaming ArrowJS UI tokens (420 bytes received)...');
+
+    expect(app.panel.isVisible).toBe(true);
+    expect(app.panel.statusBadge.textContent).toBe('STREAMING');
+    expect(app.panel.ttiBadge.textContent).toBe('TTI: LIVE...');
+    expect(document.getElementById('hud-status-msg').textContent).toContain(
+      'Streaming ArrowJS UI tokens (420 bytes received)...'
+    );
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

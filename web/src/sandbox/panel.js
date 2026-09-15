@@ -170,6 +170,52 @@ export class IncidentPanel {
     this.show();
   }
 
+  /**
+   * Display live progressive streaming indicator while Gemini is synthesizing the ArrowJS UI.
+   *
+   * @param {string} statusMessage - Current streaming/reasoning step message.
+   * @param {string} podId - Target pod name.
+   */
+  showStreamingProgress(statusMessage, podId = 'Pod') {
+    if (podId) {
+      this.titleText.textContent = podId;
+    }
+    this.statusBadge.textContent = 'STREAMING';
+    this.statusBadge.className = 'panel-status-pill status-pending';
+    this.ttiBadge.textContent = 'TTI: LIVE...';
+
+    const streamingCode = `
+      const state = reactive({
+        msg: ${JSON.stringify(statusMessage || 'Synthesizing reactive ArrowJS control interface...')},
+        pod: ${JSON.stringify(podId || 'Pod')}
+      });
+      const template = html\`
+        <div class="ephemeris-widget streaming-skeleton">
+          <div class="remediation-in-progress">
+            <div class="progress-title">
+              <span class="spinner-inline"></span>
+              <span>Gemini 3.8 Flash Live Synthesis</span>
+            </div>
+            <div class="stepper-list">
+              <div class="step-item done">
+                <span class="step-num">1</span>
+                <span class="step-text">Spatial context bound: <strong>\${() => state.pod}</strong></span>
+              </div>
+              <div class="step-item done">
+                <span class="step-num">2</span>
+                <span class="step-text">\${() => state.msg}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      \`;
+      template(container);
+    `;
+
+    this.runtime.execute(streamingCode, { pod_id: podId });
+    this.show();
+  }
+
   show() {
     this.panelEl.style.display = 'flex';
     this.isVisible = true;

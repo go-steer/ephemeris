@@ -139,3 +139,34 @@ func TestSanitizeCode(t *testing.T) {
 		t.Errorf("expected 'let b = 2;', got %q", sanitizedJS)
 	}
 }
+
+func TestAgent_GenerateStream_StatusCallbacks(t *testing.T) {
+	ctx := context.Background()
+	agent := NewAgent(ctx, AgentConfig{
+		Model:     "gemini-3.8-flash",
+		ForceMock: true,
+	})
+
+	telemProvider := telemetry.NewMockProvider()
+	telemData, err := telemProvider.QueryLogs(ctx, "gke://production/payment-service", 10)
+	if err != nil {
+		t.Fatalf("QueryLogs failed: %v", err)
+	}
+
+	var statusMessages []string
+	code, err := agent.GenerateStream(ctx, "Diagnose crash", telemData, func(msg string) {
+		statusMessages = append(statusMessages, msg)
+	})
+	if err != nil {
+		t.Fatalf("GenerateStream failed: %v", err)
+	}
+	if len(code) == 0 {
+		t.Fatal("expected non-empty code from GenerateStream")
+	}
+	if len(statusMessages) == 0 {
+		t.Fatal("expected at least one status callback message")
+	}
+	if !strings.Contains(statusMessages[0], "panic trace") {
+		t.Errorf("expected panic trace analysis status, got %q", statusMessages[0])
+	}
+}
