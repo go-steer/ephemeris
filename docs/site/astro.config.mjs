@@ -25,7 +25,8 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'ephemeris',
-      description: 'Generative spatial observability and ephemeral ArrowJS incident triage platform.',
+      description:
+        'Generative spatial observability and ephemeral ArrowJS incident triage platform.',
       social: [
         {
           icon: 'github',
@@ -48,6 +49,8 @@ export default defineConfig({
           items: [
             { label: '3D Spatial Canvas', slug: 'spatial-canvas' },
             { label: 'Generative UI (ArrowJS)', slug: 'generative-ui' },
+            { label: 'GCP Managed MCP Telemetry', slug: 'mcp-telemetry' },
+            { label: 'SRE Controls & Blast Radius', slug: 'sre-controls' },
           ],
         },
       ],
