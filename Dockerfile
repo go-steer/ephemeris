@@ -24,9 +24,10 @@ COPY web/ ./web/
 RUN npx vite build
 
 # Stage 2: Build Go single-binary daemon embedding web assets
-FROM golang:1.25-alpine AS go-builder
+FROM golang:1.26-alpine AS go-builder
 WORKDIR /workspace
 ENV GOPROXY=https://proxy.golang.org,direct
+ENV GOTOOLCHAIN=auto
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
