@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Post-deployment end-to-end verification test for Cloud Run or local Ephemeris server.
+# Verifies HTTP /healthz, SPA asset serving (/), WebSocket topology stream (/ws),
+# and live AI incident triage ArrowJS UI compilation.
+#
+# Usage:
+#   dev/tools/verify-cloud-run --url https://ephemeris-demo-xxx.run.app
+#   dev/tools/verify-cloud-run --url http://localhost:8080
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+
+cd "$(repo_root)"
+
+TARGET_URL="http://localhost:8080"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --url)
+      TARGET_URL="$2"
+      shift 2
+      ;;
+    -h|--help)
+      echo "Usage: dev/tools/verify-cloud-run [--url <base-url>]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+go run ./cmd/verify -url "${TARGET_URL}"

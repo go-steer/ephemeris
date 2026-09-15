@@ -72,4 +72,14 @@ gcloud run deploy "${SERVICE_NAME}" \
   --port 8080 \
   --set-env-vars "EPHEMERIS_MODE=${MODE}"
 
-ok "Deployment complete"
+SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" \
+  --project "${PROJECT_ID}" \
+  --region "${REGION}" \
+  --format='value(status.url)')"
+
+ok "Deployment complete: ${SERVICE_URL}"
+
+if [[ -n "${SERVICE_URL}" ]]; then
+  step "Running post-deployment E2E verification against ${SERVICE_URL}"
+  dev/tools/verify-cloud-run --url "${SERVICE_URL}"
+fi
