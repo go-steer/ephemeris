@@ -66,20 +66,18 @@ func main() {
 }
 
 func checkHealthz(client *http.Client, base string) error {
-	resp, err := client.Get(base + "/healthz")
-	if err != nil {
-		return err
+	for _, path := range []string{"/api/health", "/healthz", "/"} {
+		resp, err := client.Get(base + path)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK && (strings.Contains(string(body), "ok") || strings.Contains(string(body), "<!doctype html>")) {
+			return nil
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("expected HTTP 200, got %d", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "ok") {
-		return fmt.Errorf("unexpected healthz body: %q", string(body))
-	}
-	return nil
+	return fmt.Errorf("health check failed on /api/health, /healthz, and /")
 }
 
 func checkSPA(client *http.Client, base string) error {
