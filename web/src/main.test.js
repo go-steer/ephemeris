@@ -316,6 +316,49 @@ describe('initializeApp', () => {
     );
   });
 
+  it('resets demo incident state when #hud-reset-incident-btn is clicked', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'production-us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                {
+                  id: 'pod-payment',
+                  name: 'payment-service',
+                  status: 'Running',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+    app.panel.showStreamingProgress('Testing reset', 'payment-service');
+    expect(app.panel.isVisible).toBe(true);
+
+    let initCalled = false;
+    app.ws.sendInit = () => {
+      initCalled = true;
+    };
+
+    const resetIncidentBtn = document.getElementById('hud-reset-incident-btn');
+    expect(resetIncidentBtn).not.toBeNull();
+    resetIncidentBtn.click();
+
+    expect(app.panel.isVisible).toBe(false);
+    expect(initCalled).toBe(true);
+    expect(mockData.clusters[0].namespaces[0].pods[0].status).toBe('CrashLoopBackOff');
+    expect(document.getElementById('hud-status-msg').textContent).toContain(
+      'Demo incident reset: payment-service restored to CrashLoopBackOff state.'
+    );
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

@@ -84,6 +84,37 @@ export function initializeApp() {
     }
   };
 
+  hud.onResetIncident = () => {
+    panel.hide();
+    hud.setSelectedPod(null);
+    topologyMesh.clearSelectedPod();
+    topologyMesh.clearBlastRadius();
+    controls.resetView();
+
+    if (currentTopologyData && currentTopologyData.clusters) {
+      currentTopologyData.clusters.forEach((c) => {
+        (c.namespaces || []).forEach((ns) => {
+          (ns.pods || []).forEach((p) => {
+            if (p.name === 'payment-service' || (p.id && p.id.includes('payment'))) {
+              p.status = 'CrashLoopBackOff';
+            }
+          });
+        });
+      });
+      topologyMesh.build(currentTopologyData);
+      const select = document.getElementById('hud-cluster-select');
+      const activeClusterName = select ? select.value : '__overview__';
+      hud.setClusters(currentTopologyData.clusters, activeClusterName);
+      hud.onClusterSelect(activeClusterName, true);
+    }
+
+    ws.sendInit();
+    hud.setStatusMessage(
+      'Demo incident reset: payment-service restored to CrashLoopBackOff state.',
+      false
+    );
+  };
+
   // Wire Camera Mode toggle (Orbit vs Pan)
   hud.onCameraModeChange = (mode) => {
     controls.setNavMode(mode);

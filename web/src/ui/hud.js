@@ -28,6 +28,7 @@ export class HUDOverlay {
     // Callbacks
     this.onPromptSubmit = null;
     this.onResetView = null;
+    this.onResetIncident = null;
     this.onClusterSelect = null;
     this.onClearSelection = null;
 
@@ -65,6 +66,7 @@ export class HUDOverlay {
             <button class="mode-btn active" id="hud-btn-mode-orbit" title="Orbit (Rotate) around cluster or target">🔄 Orbit</button>
             <button class="mode-btn" id="hud-btn-mode-pan" title="Pan (Move) camera focus left/right, up/down (or hold Shift / Space)">✋ Pan</button>
           </div>
+          <button class="hud-btn reset-incident-btn" id="hud-reset-incident-btn" title="Reset Demo Incident State (Restore CrashLoopBackOff)">&#x1F504; Reset Incident</button>
           <button class="hud-btn" id="hud-reset-view-btn" title="Reset 3D Camera Overview">&#x2299; Overview</button>
           <span class="connection-status connected" id="hud-conn-status">LIVE</span>
         </div>
@@ -129,6 +131,7 @@ export class HUDOverlay {
     const input = this.container.querySelector('#hud-prompt-input');
     const investBtn = this.container.querySelector('#hud-investigate-btn');
     const resetBtn = this.container.querySelector('#hud-reset-view-btn');
+    const resetIncidentBtn = this.container.querySelector('#hud-reset-incident-btn');
     const clusterSelect = this.container.querySelector('#hud-cluster-select');
     const btnOrbit = this.container.querySelector('#hud-btn-mode-orbit');
     const btnPan = this.container.querySelector('#hud-btn-mode-pan');
@@ -183,6 +186,10 @@ export class HUDOverlay {
 
     resetBtn.addEventListener('click', () => {
       if (this.onResetView) this.onResetView();
+    });
+
+    resetIncidentBtn?.addEventListener('click', () => {
+      if (this.onResetIncident) this.onResetIncident();
     });
 
     if (clusterSelect) {

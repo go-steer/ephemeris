@@ -294,6 +294,18 @@ body {
   background: var(--border-subtle);
 }
 
+.reset-incident-btn {
+  border-color: rgba(234, 67, 53, 0.45);
+  color: #f87171;
+}
+
+.reset-incident-btn:hover {
+  border-color: #ea4335;
+  color: #ffffff;
+  background: rgba(234, 67, 53, 0.25);
+  box-shadow: 0 0 10px rgba(234, 67, 53, 0.35);
+}
+
 .connection-status {
   font-family: var(--font-mono);
   font-size: 11px;

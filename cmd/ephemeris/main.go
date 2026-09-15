@@ -19,6 +19,8 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
+	"strconv"
 
 	"github.com/go-steer/ephemeris/internal/webui"
 	"github.com/go-steer/ephemeris/pkg/gke"
@@ -28,8 +30,15 @@ import (
 )
 
 func main() {
-	port := flag.Int("port", 8080, "HTTP and WebSocket listen port")
-	mode := flag.String("mode", "mock", "Operational mode: 'mock' or 'live'")
+	defaultPort := 8080
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil {
+			defaultPort = p
+		}
+	}
+
+	port := flag.Int("port", defaultPort, "HTTP and WebSocket listen port (env: PORT)")
+	mode := flag.String("mode", orchestrator.GetEnvOrDefault("EPHEMERIS_MODE", "mock"), "Operational mode: 'mock' or 'live'")
 	webDir := flag.String("web-dir", "", "Serve web assets from directory instead of embedded bundle")
 	gcpProject := flag.String("gcp-project", orchestrator.GetEnvOrDefault("GOOGLE_CLOUD_PROJECT", ""), "GCP Project ID")
 	vertexLocation := flag.String("vertex-location", orchestrator.GetEnvOrDefault("VERTEX_LOCATION", "global"), "Vertex AI Location (default: global)")
