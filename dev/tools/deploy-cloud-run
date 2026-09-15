@@ -61,7 +61,7 @@ if [[ -z "$PROJECT_ID" ]]; then
   exit 1
 fi
 
-step "Deploying ${SERVICE_NAME} to Cloud Run [project=${PROJECT_ID}, region=${REGION}, mode=${MODE}]"
+echo "▸ Deploying ${SERVICE_NAME} to Cloud Run [project=${PROJECT_ID}, region=${REGION}, mode=${MODE}]"
 
 gcloud run deploy "${SERVICE_NAME}" \
   --source . \
@@ -77,9 +77,9 @@ SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" \
   --region "${REGION}" \
   --format='value(status.url)')"
 
-ok "Deployment complete: ${SERVICE_URL}"
+echo "✓ Deployment complete: ${SERVICE_URL}"
 
 if [[ -n "${SERVICE_URL}" ]]; then
-  step "Running post-deployment E2E verification against ${SERVICE_URL}"
+  echo "▸ Running post-deployment E2E verification against ${SERVICE_URL}"
   dev/tools/verify-cloud-run --url "${SERVICE_URL}"
 fi
