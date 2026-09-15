@@ -13,12 +13,13 @@
 # limitations under the License.
 
 # Stage 1: Build Three.js & ArrowJS frontend assets
-FROM node:22-alpine AS web-builder
-WORKDIR /workspace/web
-COPY web/package.json web/package-lock.json* ./
+FROM node:24-alpine AS web-builder
+WORKDIR /workspace
+COPY package.json package-lock.json ./
 RUN npm ci
-COPY web/ ./
-RUN npm run build
+COPY vite.config.js ./
+COPY web/ ./web/
+RUN npx vite build
 
 # Stage 2: Build Go single-binary daemon embedding web assets
 FROM golang:1.25-alpine AS go-builder
