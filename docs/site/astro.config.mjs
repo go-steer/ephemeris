@@ -53,6 +53,10 @@ export default defineConfig({
             { label: 'SRE Controls & Blast Radius', slug: 'sre-controls' },
           ],
         },
+        {
+          label: 'Operations & Deployment',
+          items: [{ label: 'Deployment (Cloud Run & GKE)', slug: 'deployment' }],
+        },
       ],
     }),
   ],
