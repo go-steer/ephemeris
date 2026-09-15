@@ -239,4 +239,29 @@ describe('TopologyMesh', () => {
     expect(topology.trafficDrainMap.get('payment-service')).toBe(0);
     expect(conduits[0].flowSpeedFactor).toBe(0);
   });
+
+  it('renders and rotates a 3D selection targeting reticle around selected pod and clears it cleanly', () => {
+    topology.build(activeTopology);
+    expect(topology.selectionReticle).toBeNull();
+
+    // Select crashing payment-service pod
+    topology.setSelectedPod('payment-service');
+    expect(topology.selectionReticle).toBeDefined();
+    expect(topology.selectionReticle).not.toBeNull();
+    expect(topology.selectedPodMesh).toBeDefined();
+    expect(topology.selectedPodMesh.userData.pod.name).toBe('payment-service');
+
+    // Outer ring should be Google Red (0xea4335) for crashing pod
+    const outerRing = topology.selectionReticle.children[0];
+    expect(outerRing.material.color.getHex()).toBe(0xea4335);
+
+    // Update should rotate the reticle
+    topology.update(1000);
+    expect(topology.selectionReticle.rotation.z).toBeCloseTo(1.8, 1);
+
+    // Clear selection
+    topology.clearSelectedPod();
+    expect(topology.selectionReticle).toBeNull();
+    expect(topology.selectedPodMesh).toBeNull();
+  });
 });

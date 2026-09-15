@@ -241,6 +241,61 @@ describe('initializeApp', () => {
     expect(statusMsg.textContent).toContain('Traffic drained to 25% on payment-service');
   });
 
+  it('displays inline @resource prompt chip, telemetry inclusion badges, and 3D reticle on pod selection, and detaches cleanly', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'production-us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                {
+                  id: 'pod-payment',
+                  name: 'payment-service',
+                  status: 'CrashLoopBackOff',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+
+    const promptChip = document.getElementById('hud-prompt-chip');
+    const chipName = document.getElementById('hud-chip-name');
+    const inclusions = document.getElementById('hud-context-inclusions');
+    const detachBtn = document.getElementById('hud-detach-btn');
+
+    // Initially hidden (cluster-wide mesh context)
+    expect(promptChip.classList.contains('hidden')).toBe(true);
+    expect(inclusions.classList.contains('hidden')).toBe(true);
+    expect(app.topologyMesh.selectionReticle).toBeNull();
+
+    // Simulate 3D node selection
+    app.controls.onSelectNode(
+      { id: 'pod-payment', name: 'payment-service', status: 'CrashLoopBackOff' },
+      { clusterName: 'production-us-central1', namespaceName: 'default' }
+    );
+
+    // Inline @payment-service chip, telemetry inclusion badges, and 3D reticle should now be active
+    expect(promptChip.classList.contains('hidden')).toBe(false);
+    expect(chipName.textContent).toBe('payment-service');
+    expect(inclusions.classList.contains('hidden')).toBe(false);
+    expect(detachBtn.classList.contains('hidden')).toBe(false);
+    expect(app.topologyMesh.selectionReticle).not.toBeNull();
+
+    // Detach via the Detach button
+    detachBtn.click();
+    expect(promptChip.classList.contains('hidden')).toBe(true);
+    expect(inclusions.classList.contains('hidden')).toBe(true);
+    expect(app.topologyMesh.selectionReticle).toBeNull();
+    expect(app.hud.selectedPod).toBeNull();
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

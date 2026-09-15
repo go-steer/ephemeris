@@ -64,7 +64,8 @@ The MVP scope is strictly limited to **Read-Only Observability for Google Kubern
 
 * **1.1:** Render a hierarchical 3D node-graph representing a single GCP project containing one GKE cluster, its namespaces, and active pods.
 * **1.2:** Implement camera controls and object selection (clicking a 3D pod sets it as the active contextual target for the agent).
-* *Acceptance:* User can view a GKE cluster in 3D and click a specific node to target it.
+* **1.3:** Implement spatial context attachment and target reticles (clicking a 3D resource renders a glowing 3D targeting reticle around the node and visibly attaches it to the AI prompt context).
+* *Acceptance:* User can view a GKE cluster in 3D, click a specific node to lock onto it with a 3D reticle, and see an explicit `@resource` context pill in the prompt input bar.
 
 ### REQ 2: The Agentic UI Runtime (ArrowJS Sandbox)
 
@@ -76,7 +77,8 @@ The MVP scope is strictly limited to **Read-Only Observability for Google Kubern
 
 * **3.1:** Implement a WebSocket server in `core-agent` for bi-directional client communication.
 * **3.2:** Assemble context payloads combining the user prompt and the selected 3D object ID, and route them to Gemini 3.x.
-* *Acceptance:* Go daemon successfully receives a prompt, dispatches it to the LLM, and pushes the resulting ArrowJS string back to the client.
+* **3.3:** Provide visual prompt context transparency in the HUD (displaying an inline `@resource-name` pill inside the prompt input box, explicit telemetry inclusion badges for `Live Logs`, `Metrics`, and `Blast Radius`, and a 1-click detach button to return to cluster-wide context).
+* *Acceptance:* Go daemon successfully receives a prompt, dispatches it to the LLM, and pushes the resulting ArrowJS string back to the client while the HUD clearly displays the attached resource context.
 
 ### REQ 4: Telemetry Integration (GCP Managed MCP)
 

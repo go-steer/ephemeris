@@ -27,9 +27,9 @@ export class HUDOverlay {
 
     // Callbacks
     this.onPromptSubmit = null;
-    this.onPromptSubmit = null;
     this.onResetView = null;
     this.onClusterSelect = null;
+    this.onClearSelection = null;
 
     this._createDOM();
   }
@@ -72,19 +72,30 @@ export class HUDOverlay {
 
       <footer class="hud-bottom-bar">
         <div class="target-context-strip" id="hud-context-strip">
-          <span class="context-label">TARGET CONTEXT:</span>
-          <span class="context-pod-badge" id="hud-target-badge">None</span>
-          <span class="context-uri" id="hud-target-uri">Click any pod in the 3D topology or enter a prompt to inspect</span>
+          <span class="context-label" id="hud-context-label">🌐 PROMPT CONTEXT:</span>
+          <span class="context-pod-badge" id="hud-target-badge">Cluster-Wide Mesh</span>
+          <div class="context-inclusion-group hidden" id="hud-context-inclusions">
+            <span class="context-inclusion-tag">📋 Live Logs</span>
+            <span class="context-inclusion-tag">📊 Metrics</span>
+            <span class="context-inclusion-tag">🕸️ Blast Radius</span>
+          </div>
+          <span class="context-uri" id="hud-target-uri">Click any 3D resource to attach its live logs & metrics to your prompt</span>
+          <button class="context-detach-btn hidden" id="hud-detach-btn" title="Detach resource from prompt context (Esc)">&#x2715; Detach</button>
         </div>
 
         <div class="triage-prompt-row">
-          <div class="prompt-input-wrapper">
+          <div class="prompt-input-wrapper" id="hud-input-wrapper">
             <span class="prompt-icon">&#x2728;</span>
+            <div class="prompt-context-pill hidden" id="hud-prompt-chip" title="Attached to AI prompt context (click × or press Esc to detach)">
+              <span class="pill-at">@</span>
+              <span class="pill-name" id="hud-chip-name">payment-service</span>
+              <button class="pill-remove-btn" id="hud-chip-remove" title="Remove from prompt context" aria-label="Remove context">&times;</button>
+            </div>
             <input
               type="text"
               id="hud-prompt-input"
               class="prompt-input"
-              placeholder="Ask Gemini or press [⏎ Enter] to run incident triage on payment-service..."
+              placeholder="Ask Gemini or press [⏎ Enter] to run incident triage across clusters..."
               autocomplete="off"
             />
           </div>
@@ -121,6 +132,19 @@ export class HUDOverlay {
     const clusterSelect = this.container.querySelector('#hud-cluster-select');
     const btnOrbit = this.container.querySelector('#hud-btn-mode-orbit');
     const btnPan = this.container.querySelector('#hud-btn-mode-pan');
+    const chipRemoveBtn = this.container.querySelector('#hud-chip-remove');
+    const detachBtn = this.container.querySelector('#hud-detach-btn');
+
+    const clearSelectionHandler = (e) => {
+      e?.stopPropagation();
+      this.setSelectedPod(null);
+      if (this.onClearSelection) {
+        this.onClearSelection();
+      }
+    };
+
+    chipRemoveBtn?.addEventListener('click', clearSelectionHandler);
+    detachBtn?.addEventListener('click', clearSelectionHandler);
 
     btnOrbit?.addEventListener('click', () => {
       btnOrbit.classList.add('active');
@@ -148,6 +172,12 @@ export class HUDOverlay {
       if (e.key === 'Enter') {
         e.preventDefault();
         submitPrompt();
+      } else if (e.key === 'Escape' && this.selectedPod) {
+        e.preventDefault();
+        clearSelectionHandler();
+      } else if (e.key === 'Backspace' && input.value === '' && this.selectedPod) {
+        e.preventDefault();
+        clearSelectionHandler();
       }
     });
 
@@ -224,39 +254,76 @@ export class HUDOverlay {
     this.selectedPod = pod;
     this.selectedMeta = meta;
 
+    const label = this.container.querySelector('#hud-context-label');
     const badge = this.container.querySelector('#hud-target-badge');
+    const inclusions = this.container.querySelector('#hud-context-inclusions');
     const uri = this.container.querySelector('#hud-target-uri');
+    const detachBtn = this.container.querySelector('#hud-detach-btn');
+    const inputWrapper = this.container.querySelector('#hud-input-wrapper');
+    const promptChip = this.container.querySelector('#hud-prompt-chip');
+    const chipName = this.container.querySelector('#hud-chip-name');
     const input = this.container.querySelector('#hud-prompt-input');
 
     if (!pod) {
+      if (label) label.textContent = '🌐 PROMPT CONTEXT:';
       if (badge) {
-        badge.textContent = 'None';
+        badge.textContent = 'Cluster-Wide Mesh';
         badge.className = 'context-pod-badge';
       }
-      if (uri) uri.textContent = 'Click any pod in the 3D topology to inspect';
+      if (inclusions) inclusions.classList.add('hidden');
+      if (detachBtn) detachBtn.classList.add('hidden');
+      if (uri) {
+        uri.textContent = 'Click any 3D resource to attach its live logs & metrics to your prompt';
+      }
+      if (promptChip) {
+        promptChip.className = 'prompt-context-pill hidden';
+      }
+      if (inputWrapper) {
+        inputWrapper.className = 'prompt-input-wrapper';
+      }
+      if (input) {
+        input.placeholder =
+          'Ask Gemini or press [⏎ Enter] to run incident triage across clusters...';
+      }
       return;
     }
 
     const status = pod.status || 'Running';
+    const statusLower = status.toLowerCase();
+
+    if (label) label.textContent = '📌 ATTACHED TO PROMPT:';
     if (badge) {
       badge.textContent = `${pod.name} [${status}]`;
-      badge.className = `context-pod-badge status-${status.toLowerCase()}`;
+      badge.className = `context-pod-badge status-${statusLower}`;
     }
+    if (inclusions) inclusions.classList.remove('hidden');
+    if (detachBtn) detachBtn.classList.remove('hidden');
 
     const resourceUri = pod.resource_uri || `gke://${meta.namespaceName || 'default'}/${pod.name}`;
     if (uri) {
       uri.textContent = resourceUri;
     }
 
-    if (status === 'CrashLoopBackOff') {
-      input.placeholder = `Ask Gemini: Why is ${pod.name} crashing? Highlight fatal errors...`;
-      this.setStatusMessage(
-        `Selected ${pod.name} in CrashLoopBackOff. Ready to investigate.`,
-        false
-      );
-    } else {
-      input.placeholder = `Ask Gemini: What is the telemetry status of ${pod.name}?`;
-      this.setStatusMessage(`Selected ${pod.name} (${status}). Ready to investigate.`, false);
+    if (promptChip && chipName) {
+      chipName.textContent = pod.name;
+      promptChip.className = `prompt-context-pill status-${statusLower} pulse-in`;
+    }
+
+    if (inputWrapper) {
+      inputWrapper.className = `prompt-input-wrapper has-context status-${statusLower}`;
+    }
+
+    if (input) {
+      if (status === 'CrashLoopBackOff' || status === 'Failed') {
+        input.placeholder = `Why is ${pod.name} crashing? Highlight fatal errors...`;
+        this.setStatusMessage(
+          `Attached @${pod.name} (${status}) to prompt context with live logs & blast radius.`,
+          false
+        );
+      } else {
+        input.placeholder = `What is the telemetry status of ${pod.name}?`;
+        this.setStatusMessage(`Attached @${pod.name} (${status}) to prompt context.`, false);
+      }
     }
   }
 

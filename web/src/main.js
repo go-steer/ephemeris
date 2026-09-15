@@ -59,12 +59,23 @@ export function initializeApp() {
     const resourceUri = pod.resource_uri || `gke://${meta.namespaceName || 'default'}/${pod.name}`;
     hud.setSelectedPod(pod, meta);
     ws.selectNode(pod.id, resourceUri);
+    topologyMesh.setSelectedPod(pod.name || pod.id);
     topologyMesh.highlightBlastRadius(pod.name || pod.id);
+  };
+
+  hud.onClearSelection = () => {
+    topologyMesh.clearSelectedPod();
+    topologyMesh.clearBlastRadius();
+    hud.setStatusMessage(
+      'Detached resource context. Prompt is now scoped to cluster-wide mesh.',
+      false
+    );
   };
 
   hud.onResetView = () => {
     controls.resetView();
     hud.setSelectedPod(null);
+    topologyMesh.clearSelectedPod();
     topologyMesh.clearBlastRadius();
     const select = document.getElementById('hud-cluster-select');
     if (select) {
@@ -338,6 +349,7 @@ export function initializeApp() {
     if (targetMesh) {
       controls.focusOnMesh(targetMesh);
     }
+    topologyMesh.setSelectedPod(targetPod.name || targetPod.id);
     topologyMesh.highlightBlastRadius(targetPod.name || targetPod.id);
 
     hud.setSelectedPod(targetPod, targetMeta);

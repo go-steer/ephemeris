@@ -166,6 +166,8 @@ export class TopologyMesh {
     this.blastRadiusPods = new Set();
     this.blastRadiusConduits = new Set();
     this.trafficDrainMap = new Map();
+    this.selectedPodMesh = null;
+    this.selectionReticle = null;
   }
 
   /**
@@ -615,6 +617,11 @@ export class TopologyMesh {
       const pos = p.curve.getPoint(progress);
       p.mesh.position.copy(pos);
     }
+
+    // Rotate active 3D selection targeting reticle
+    if (this.selectionReticle) {
+      this.selectionReticle.rotation.z = time * 0.0018;
+    }
   }
 
   /**
@@ -887,6 +894,80 @@ export class TopologyMesh {
   }
 
   /**
+   * Renders a glowing 3D selection targeting reticle around the selected pod.
+   * @param {string} podId
+   */
+  setSelectedPod(podId) {
+    this.clearSelectedPod();
+    if (!podId) return;
+
+    let targetMesh = this.podMap.get(podId);
+    if (!targetMesh) {
+      for (const [key, mesh] of this.podMap.entries()) {
+        if (typeof key === 'string' && (key.includes(podId) || podId.includes(key))) {
+          targetMesh = mesh;
+          break;
+        }
+      }
+    }
+
+    if (!targetMesh || !targetMesh.userData || !targetMesh.userData.podGroup) return;
+
+    this.selectedPodMesh = targetMesh;
+    const isCrash =
+      targetMesh.userData.isCrashLoop ||
+      (targetMesh.userData.pod &&
+        (targetMesh.userData.pod.status === 'CrashLoopBackOff' ||
+          targetMesh.userData.pod.status === 'Failed'));
+
+    const ringColor = isCrash ? 0xea4335 : 0x4285f4;
+    const reticleGroup = new THREE.Group();
+
+    const outerGeo = new THREE.RingGeometry(1.28, 1.44, 32);
+    const outerMat = new THREE.MeshBasicMaterial({
+      color: ringColor,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const outerRing = new THREE.Mesh(outerGeo, outerMat);
+    reticleGroup.add(outerRing);
+
+    const innerGeo = new THREE.RingGeometry(1.08, 1.15, 6);
+    const innerMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.65,
+    });
+    const innerRing = new THREE.Mesh(innerGeo, innerMat);
+    reticleGroup.add(innerRing);
+
+    reticleGroup.rotation.x = -Math.PI / 2;
+    reticleGroup.position.set(0, -0.52, 0);
+
+    targetMesh.userData.podGroup.add(reticleGroup);
+    this.selectionReticle = reticleGroup;
+  }
+
+  /**
+   * Removes the active 3D selection targeting reticle.
+   */
+  clearSelectedPod() {
+    if (this.selectionReticle) {
+      if (this.selectionReticle.parent) {
+        this.selectionReticle.parent.remove(this.selectionReticle);
+      }
+      this.selectionReticle.traverse((child) => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) child.material.dispose();
+      });
+      this.selectionReticle = null;
+    }
+    this.selectedPodMesh = null;
+  }
+
+  /**
    * Returns spatial coordinates for a given cluster name.
    * @param {string} clusterName
    * @returns {THREE.Vector3|null}
@@ -900,6 +981,7 @@ export class TopologyMesh {
   }
 
   clear() {
+    this.clearSelectedPod();
     while (this.group.children.length > 0) {
       const child = this.group.children[0];
       this.group.remove(child);

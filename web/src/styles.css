@@ -338,12 +338,17 @@ body {
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.6);
 }
 
+.hidden {
+  display: none !important;
+}
+
 .target-context-strip {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   font-family: var(--font-mono);
+  flex-wrap: wrap;
 }
 
 .context-label {
@@ -359,6 +364,7 @@ body {
   background: var(--bg-elevated);
   color: var(--text-muted);
   border: 1px solid var(--border-subtle);
+  font-weight: 700;
 }
 
 .context-pod-badge.status-running {
@@ -367,7 +373,8 @@ body {
   border-color: rgba(52, 168, 83, 0.5);
 }
 
-.context-pod-badge.status-crashloopbackoff {
+.context-pod-badge.status-crashloopbackoff,
+.context-pod-badge.status-failed {
   background: rgba(234, 67, 53, 0.2);
   color: var(--accent-red);
   border-color: rgba(234, 67, 53, 0.6);
@@ -379,11 +386,46 @@ body {
   border-color: rgba(251, 188, 4, 0.5);
 }
 
+.context-inclusion-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.context-inclusion-tag {
+  background: rgba(66, 133, 244, 0.12);
+  color: #8ab4f8;
+  border: 1px solid rgba(66, 133, 244, 0.35);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
 .context-uri {
   color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+}
+
+.context-detach-btn {
+  background: rgba(234, 67, 53, 0.15);
+  color: var(--accent-red);
+  border: 1px solid rgba(234, 67, 53, 0.4);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.context-detach-btn:hover {
+  background: rgba(234, 67, 53, 0.28);
+  border-color: var(--accent-red);
 }
 
 .triage-prompt-row {
@@ -396,6 +438,7 @@ body {
   flex: 1;
   display: flex;
   align-items: center;
+  gap: 8px;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
@@ -408,9 +451,102 @@ body {
   box-shadow: 0 0 10px rgba(66, 133, 244, 0.25);
 }
 
+.prompt-input-wrapper.has-context.status-crashloopbackoff,
+.prompt-input-wrapper.has-context.status-failed {
+  border-color: rgba(234, 67, 53, 0.65);
+  box-shadow: 0 0 12px rgba(234, 67, 53, 0.2);
+}
+
+.prompt-input-wrapper.has-context.status-running {
+  border-color: rgba(52, 168, 83, 0.65);
+  box-shadow: 0 0 12px rgba(52, 168, 83, 0.2);
+}
+
+.prompt-input-wrapper.has-context.status-pending {
+  border-color: rgba(251, 188, 4, 0.65);
+  box-shadow: 0 0 12px rgba(251, 188, 4, 0.2);
+}
+
 .prompt-icon {
-  margin-right: 8px;
   font-size: 15px;
+}
+
+.prompt-context-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(66, 133, 244, 0.18);
+  color: #8ab4f8;
+  border: 1px solid rgba(66, 133, 244, 0.5);
+  white-space: nowrap;
+}
+
+.prompt-context-pill.status-crashloopbackoff,
+.prompt-context-pill.status-failed {
+  background: rgba(234, 67, 53, 0.22);
+  color: var(--accent-red);
+  border-color: rgba(234, 67, 53, 0.7);
+}
+
+.prompt-context-pill.status-running {
+  background: rgba(52, 168, 83, 0.18);
+  color: var(--accent-green);
+  border-color: rgba(52, 168, 83, 0.65);
+}
+
+.prompt-context-pill.status-pending {
+  background: rgba(251, 188, 4, 0.18);
+  color: var(--accent-amber);
+  border-color: rgba(251, 188, 4, 0.65);
+}
+
+.prompt-context-pill.pulse-in {
+  animation: context-attach-pulse 0.35s ease-out;
+}
+
+@keyframes context-attach-pulse {
+  0% {
+    transform: scale(0.92);
+    box-shadow: 0 0 0 rgba(66, 133, 244, 0);
+  }
+
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 0 14px rgba(66, 133, 244, 0.6);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 rgba(66, 133, 244, 0);
+  }
+}
+
+.pill-at {
+  opacity: 0.75;
+  font-weight: 400;
+}
+
+.pill-remove-btn {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-left: 2px;
+  cursor: pointer;
+  opacity: 0.75;
+  border-radius: 3px;
+}
+
+.pill-remove-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .prompt-input {
