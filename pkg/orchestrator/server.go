@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -174,51 +175,71 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		if resourceURI == "" {
 			resourceURI = state.activeResource
 		}
-
 		if resourceURI == "" {
-			s.sendError(conn, "no active pod selected in 3D scene")
-			return
+			resourceURI = "gke://fleet/overview"
 		}
 
-		// Step 1: Send status notification
-		_ = conn.WriteJSON(api.ServerMessage{
-			Type:    api.MsgTypeStatus,
-			Message: "Querying telemetry from MCP...",
-		})
+		statusFn := func(statusMsg string) {
+			_ = conn.WriteJSON(api.ServerMessage{
+				Type:    api.MsgTypeStatus,
+				Message: statusMsg,
+			})
+		}
 
-		// Step 2: Fetch telemetry
+		topo, _ := s.gke.GetTopology(ctx)
+
+		// Step 1: Resolve natural-language intent via Gemini LLM (or deterministic fallback)
+		intent := s.agent.ResolveIntent(ctx, msg.Prompt, &api.TelemetryData{
+			ResourceURI: resourceURI,
+			Topology:    topo,
+		}, statusFn)
+
+		// Adjust resourceURI based on LLM-resolved intent
+		switch intent.Archetype {
+		case ArchetypeIssuesFleetMatrix:
+			resourceURI = "gke://fleet/issues"
+		case ArchetypeNamespaceInventory:
+			ns := intent.TargetNamespace
+			if ns == "" {
+				ns = "default"
+			}
+			resourceURI = "gke://namespace/" + ns
+		case ArchetypeResourceLeaderboard:
+			resourceURI = "gke://fleet/leaderboard"
+		default:
+			if intent.TargetPod != "" && !strings.Contains(resourceURI, intent.TargetPod) {
+				resourceURI = "gke://default/" + intent.TargetPod
+			}
+		}
+
+		// Step 2: Fetch telemetry and attach live topology
+		statusFn("Executing MCP telemetry & topology query...")
 		telem, err := s.telemetry.QueryLogs(ctx, resourceURI, 50)
 		if err != nil {
 			s.sendError(conn, fmt.Sprintf("telemetry query failed: %v", err))
 			return
 		}
+		if topo != nil {
+			telem.Topology = topo
+		}
 
-		// Step 3: Send status notification
-		_ = conn.WriteJSON(api.ServerMessage{
-			Type:    api.MsgTypeStatus,
-			Message: "Compiling ArrowJS reactive UI via Gemini...",
-		})
-
-		// Step 4: Generate ArrowJS reactive UI with progressive streaming status updates
-		code, err := s.agent.GenerateStream(ctx, msg.Prompt, telem, func(statusMsg string) {
-			_ = conn.WriteJSON(api.ServerMessage{
-				Type:    api.MsgTypeStatus,
-				Message: statusMsg,
-			})
-		})
+		// Step 3: Generate ArrowJS reactive UI with progressive streaming status updates
+		code, err := s.agent.GenerateStreamWithIntent(ctx, msg.Prompt, intent, telem, statusFn)
 		if err != nil {
 			s.sendError(conn, fmt.Sprintf("UI compilation failed: %v", err))
 			return
 		}
 
-		// Step 5: Deliver UI component
+		// Step 4: Deliver UI component with resolved Archetype metadata
 		_ = conn.WriteJSON(api.ServerMessage{
 			Type: api.MsgTypeUIComponent,
 			UI: &api.UIComponentData{
-				ResourceURI: resourceURI,
-				Prompt:      msg.Prompt,
-				Code:        code,
-				Telemetry:   telem,
+				ResourceURI:     resourceURI,
+				Prompt:          msg.Prompt,
+				Archetype:       string(intent.Archetype),
+				TargetNamespace: intent.TargetNamespace,
+				Code:            code,
+				Telemetry:       telem,
 			},
 		})
 

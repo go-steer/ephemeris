@@ -117,12 +117,15 @@ type TelemetryData struct {
 	PodID       string            `json:"pod_id"`
 	Metrics     map[string]string `json:"metrics"`
 	Logs        []LogEntry        `json:"logs"`
+	Topology    *TopologyData     `json:"topology,omitempty"`
 }
 
 // UIComponentData contains compiled ArrowJS template code and bound telemetry.
 type UIComponentData struct {
-	ResourceURI string         `json:"resource_uri"`
-	Prompt      string         `json:"prompt"`
-	Code        string         `json:"code"`
-	Telemetry   *TelemetryData `json:"telemetry"`
+	ResourceURI     string         `json:"resource_uri"`
+	Prompt          string         `json:"prompt"`
+	Archetype       string         `json:"archetype,omitempty"`
+	TargetNamespace string         `json:"target_namespace,omitempty"`
+	Code            string         `json:"code"`
+	Telemetry       *TelemetryData `json:"telemetry"`
 }

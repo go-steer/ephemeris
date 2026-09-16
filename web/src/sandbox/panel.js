@@ -26,6 +26,8 @@ export class IncidentPanel {
     this.container = container;
     this.isMinimized = false;
     this.isVisible = false;
+    this.activeObject = null;
+    this.onObjectPromptSubmit = null;
 
     this._createDOM();
     this.runtime = new ArrowSandboxRuntime(this.sandboxHost);
@@ -88,11 +90,246 @@ export class IncidentPanel {
     this.sandboxHost.className = 'sandbox-host';
     this.bodyEl.appendChild(this.sandboxHost);
 
+    // Persistent Object Chat Footer (Dedicated per-object prompt window)
+    this.footerEl = document.createElement('div');
+    this.footerEl.className = 'panel-object-chat-footer';
+
+    this.chatHeaderEl = document.createElement('div');
+    this.chatHeaderEl.className = 'panel-object-chat-header';
+
+    const chatTitle = document.createElement('div');
+    chatTitle.className = 'panel-object-chat-title';
+    chatTitle.innerHTML = `<span class="panel-chat-pulse-dot"></span><span>DEDICATED WORKLOAD CO-PILOT</span>`;
+
+    this.quickChipsEl = document.createElement('div');
+    this.quickChipsEl.className = 'panel-quick-chips';
+
+    const logsChip = document.createElement('button');
+    logsChip.className = 'panel-quick-chip';
+    logsChip.id = 'panel-chip-logs';
+    logsChip.textContent = '📋 Show Logs';
+    logsChip.addEventListener('click', () => {
+      const podName = this._getActivePodName();
+      this._submitObjectPrompt(`Show me the logs for ${podName}`);
+    });
+
+    const triageChip = document.createElement('button');
+    triageChip.className = 'panel-quick-chip';
+    triageChip.id = 'panel-chip-triage';
+    triageChip.textContent = '🔍 AI Triage';
+    triageChip.addEventListener('click', () => {
+      const podName = this._getActivePodName();
+      this._submitObjectPrompt(`Run AI root-cause triage for ${podName}`);
+    });
+
+    const metricsChip = document.createElement('button');
+    metricsChip.className = 'panel-quick-chip';
+    metricsChip.id = 'panel-chip-metrics';
+    metricsChip.textContent = '📊 Resource Metrics';
+    metricsChip.addEventListener('click', () => {
+      const podName = this._getActivePodName();
+      this._submitObjectPrompt(`Compare CPU and memory usage for ${podName}`);
+    });
+
+    this.quickChipsEl.appendChild(logsChip);
+    this.quickChipsEl.appendChild(triageChip);
+    this.quickChipsEl.appendChild(metricsChip);
+
+    this.chatHeaderEl.appendChild(chatTitle);
+    this.chatHeaderEl.appendChild(this.quickChipsEl);
+
+    this.chatInputRow = document.createElement('div');
+    this.chatInputRow.className = 'panel-object-input-row';
+
+    this.objectTagEl = document.createElement('span');
+    this.objectTagEl.className = 'panel-object-tag';
+    this.objectTagEl.id = 'panel-object-tag';
+    this.objectTagEl.textContent = '@workload';
+
+    this.objectInputEl = document.createElement('input');
+    this.objectInputEl.type = 'text';
+    this.objectInputEl.id = 'panel-object-prompt-input';
+    this.objectInputEl.className = 'panel-object-input';
+    this.objectInputEl.placeholder =
+      'Ask this object anything (e.g. "show logs", "why did it crash?")...';
+    this.objectInputEl.addEventListener('focus', () => {
+      if (this.objectInputEl.value) {
+        this.objectInputEl.select();
+      }
+    });
+    this.objectInputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this._handleInputSubmit();
+      } else if (e.key === 'Escape' && this.objectInputEl.value) {
+        e.preventDefault();
+        this.objectInputEl.value = '';
+      }
+    });
+
+    this.objectSendBtn = document.createElement('button');
+    this.objectSendBtn.id = 'panel-object-send-btn';
+    this.objectSendBtn.className = 'panel-object-send-btn';
+    this.objectSendBtn.textContent = 'Ask AI ↵';
+    this.objectSendBtn.addEventListener('click', () => this._handleInputSubmit());
+
+    this.chatInputRow.appendChild(this.objectTagEl);
+    this.chatInputRow.appendChild(this.objectInputEl);
+    this.chatInputRow.appendChild(this.objectSendBtn);
+
+    this.footerEl.appendChild(this.chatHeaderEl);
+    this.footerEl.appendChild(this.chatInputRow);
+
     this.panelEl.appendChild(this.headerEl);
     this.panelEl.appendChild(this.bodyEl);
+    this.panelEl.appendChild(this.footerEl);
     this.container.appendChild(this.panelEl);
 
     this._setupDragging();
+  }
+
+  _getActivePodName() {
+    if (this.activeObject && this.activeObject.pod && this.activeObject.pod.name) {
+      return this.activeObject.pod.name;
+    }
+    return this.titleText.textContent || 'payment-service';
+  }
+
+  _handleInputSubmit() {
+    const val = (this.objectInputEl.value || '').trim();
+    if (!val) return;
+    this.objectInputEl.value = '';
+    this._submitObjectPrompt(val);
+  }
+
+  _submitObjectPrompt(promptText) {
+    if (this.onObjectPromptSubmit) {
+      const pod = (this.activeObject && this.activeObject.pod) || {
+        name: this._getActivePodName(),
+      };
+      const meta = (this.activeObject && this.activeObject.meta) || {};
+      this.onObjectPromptSubmit(promptText, pod, meta);
+    }
+  }
+
+  /**
+   * Open the floating Object Chat & Inspector window immediately when a 3D pod is clicked.
+   *
+   * @param {object} pod - Selected 3D pod object { id, name, status, restarts, cpu, memory }.
+   * @param {object} meta - Cluster/namespace metadata { clusterName, namespaceName }.
+   */
+  openObjectInspector(pod, meta = {}) {
+    if (!pod) return;
+    this.activeObject = { pod, meta };
+    const podName = pod.name || pod.id || 'Workload';
+    const status = pod.status || 'Running';
+    const nsName = meta.namespaceName || pod.namespace || 'default';
+    const clusterName = meta.clusterName || pod.cluster || 'production-us-central1';
+
+    this.titleText.textContent = podName;
+    this.statusBadge.textContent = status;
+    this.statusBadge.className = `panel-status-pill status-${status.toLowerCase()}`;
+    this.ttiBadge.textContent = 'INSPECTOR';
+    this.ttiBadge.className = 'panel-tti-badge fast';
+
+    if (this.objectTagEl) {
+      this.objectTagEl.textContent = `@${podName}`;
+    }
+    if (this.objectInputEl) {
+      this.objectInputEl.placeholder = `Ask @${podName} anything (e.g. "show logs", "triage crash")...`;
+    }
+
+    const inspectorCode = `
+      const state = reactive({
+        podName: ${JSON.stringify(podName)},
+        status: ${JSON.stringify(status)},
+        namespace: ${JSON.stringify(nsName)},
+        cluster: ${JSON.stringify(clusterName)},
+        restarts: ${JSON.stringify(pod.restarts ?? (status === 'CrashLoopBackOff' ? 14 : 0))},
+        cpu: ${JSON.stringify(pod.cpu_usage || pod.cpu || (status === 'CrashLoopBackOff' ? '980m' : '240m'))},
+        memory: ${JSON.stringify(pod.memory_usage || pod.memory || (status === 'CrashLoopBackOff' ? '1.8Gi' : '420Mi'))}
+      });
+
+      const triggerPrompt = (promptText) => {
+        container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
+          bubbles: true,
+          composed: true,
+          detail: {
+            prompt: promptText,
+            podId: state.podName,
+            resourceUri: 'gke://' + state.namespace + '/' + state.podName
+          }
+        }));
+      };
+
+      const template = html\`
+        <div class="ephemeris-widget">
+          <div class="widget-header">
+            <div class="header-main">
+              <span class="pod-title">\${() => '🎯 Spatial Object Inspector: ' + state.podName}</span>
+              <span class="\${() => 'status-pill status-' + state.status.toLowerCase()}">\${() => state.status}</span>
+            </div>
+            <div class="header-meta">
+              <span>Cluster: \${() => state.cluster} &bull; Namespace: \${() => state.namespace}</span>
+            </div>
+          </div>
+
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <span class="metric-box-val">\${() => state.cpu}</span>
+              <span class="metric-box-lbl">CPU Allocation</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-val">\${() => state.memory}</span>
+              <span class="metric-box-lbl">Memory Usage</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-val">\${() => state.restarts}</span>
+              <span class="metric-box-lbl">Container Restarts</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-val">\${() => 'gke://' + state.namespace + '/' + state.podName}</span>
+              <span class="metric-box-lbl">MCP Resource URI</span>
+            </div>
+          </div>
+
+          <div class="diagnosis-card">
+            <div class="diagnosis-header">
+              <span class="diagnosis-pill">DEDICATED OBJECT CO-PILOT</span>
+              <span class="diagnosis-title">Interactive Generative Views for @\${() => state.podName}</span>
+            </div>
+            <div class="diagnosis-body">
+              Select a specialized generative view below or type any natural-language question in the dedicated <strong>@\${() => state.podName}</strong> prompt bar at the bottom of this window.
+            </div>
+          </div>
+
+          <div class="actions-list">
+            <div class="action-card recommended">
+              <div class="action-meta">
+                <div class="action-name">📋 Live Container Log Stream & Search Console</div>
+                <div class="action-detail">Stream and filter container stdout/stderr logs with severity pills and regex search</div>
+              </div>
+              <button class="remediation-btn primary" @click="\${() => triggerPrompt('Show me the logs for ' + state.podName)}">
+                Open Logs
+              </button>
+            </div>
+            <div class="action-card">
+              <div class="action-meta">
+                <div class="action-name">⚡ Deep AI Root-Cause Triage & Remediation Cockpit</div>
+                <div class="action-detail">Synthesize stack-trace diagnosis, blast radius analysis, traffic drain & 1-click rollback</div>
+              </div>
+              <button class="remediation-btn secondary" @click="\${() => triggerPrompt('Run AI root-cause triage for ' + state.podName)}">
+                Launch Triage
+              </button>
+            </div>
+          </div>
+        </div>
+      \`;
+      template(container);
+    `;
+
+    this.runtime.execute(inspectorCode, { pod_id: podName });
+    this.show();
   }
 
   _setupDragging() {
@@ -160,6 +397,13 @@ export class IncidentPanel {
     this.statusBadge.textContent = status;
     this.statusBadge.className = `panel-status-pill status-${status.toLowerCase()}`;
 
+    if (this.objectTagEl) {
+      this.objectTagEl.textContent = `@${podId}`;
+    }
+    if (this.objectInputEl) {
+      this.objectInputEl.placeholder = `Ask @${podId} anything (e.g. "show logs", "triage crash")...`;
+    }
+
     if (meta.durationMs !== undefined) {
       const ttiSec = (meta.durationMs / 1000).toFixed(2);
       this.ttiBadge.textContent = `TTI: ${ttiSec}s`;
@@ -179,6 +423,9 @@ export class IncidentPanel {
   showStreamingProgress(statusMessage, podId = 'Pod') {
     if (podId) {
       this.titleText.textContent = podId;
+      if (this.objectTagEl) {
+        this.objectTagEl.textContent = `@${podId}`;
+      }
     }
     this.statusBadge.textContent = 'STREAMING';
     this.statusBadge.className = 'panel-status-pill status-pending';
@@ -233,10 +480,12 @@ export class IncidentPanel {
     this.isMinimized = !this.isMinimized;
     if (this.isMinimized) {
       this.bodyEl.style.display = 'none';
+      if (this.footerEl) this.footerEl.style.display = 'none';
       this.minBtn.innerHTML = '&#43;';
       this.panelEl.classList.add('minimized');
     } else {
       this.bodyEl.style.display = 'block';
+      if (this.footerEl) this.footerEl.style.display = 'flex';
       this.minBtn.innerHTML = '&minus;';
       this.panelEl.classList.remove('minimized');
     }

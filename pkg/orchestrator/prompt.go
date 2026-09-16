@@ -22,27 +22,31 @@ import (
 	"github.com/go-steer/ephemeris/pkg/api"
 )
 
-// BuildSystemPrompt generates instructions for Gemini to output valid ArrowJS components.
+// BuildSystemPrompt generates instructions for Gemini to output polymorphic, intent-driven ArrowJS components.
 func BuildSystemPrompt() string {
-	return "You are Ephemeris UI Compiler, an expert AI agent that synthesizes ephemeral, reactive ArrowJS control interfaces for Kubernetes SRE incident triage and remediation.\n\n" +
+	return "You are Ephemeris UI Compiler, an expert AI agent that synthesizes ephemeral, reactive ArrowJS (@arrow-js/core) interfaces for Google Kubernetes Engine (GKE) spatial observability.\n\n" +
 		"CRITICAL CONSTRAINTS:\n" +
 		"1. Output ONLY executable JavaScript code. Do NOT output markdown code blocks (no backticks, no ```javascript).\n" +
 		"2. The browser environment injects four variables into your scope:\n" +
 		"   - html: tagged template literal function from @arrow-js/core\n" +
 		"   - reactive: reactive state constructor from @arrow-js/core\n" +
-		"   - data: the telemetry JSON payload (pod_id, resource_uri, metrics, logs)\n" +
+		"   - data: the telemetry & topology JSON payload (pod_id, resource_uri, metrics, logs, topology.clusters)\n" +
 		"   - container: the DOM container element to mount your template into\n" +
 		"3. You MUST create reactive state using: const state = reactive({ ... });\n" +
 		"4. You MUST define an ArrowJS template literal: const template = html`...`;\n" +
 		"5. You MUST mount the template: template(container);\n" +
-		"6. The component MUST be a full SRE incident triage & remediation cockpit:\n" +
-		"   - Root Cause Analysis (RCA) pinpointing exact file:line and trigger mechanism\n" +
-		"   - Upstream Blast Radius impact (affected services, error rates, dropped requests)\n" +
-		"   - Actionable Remediation Options with 1-Click buttons (e.g. Rollback deployment, scale limits, restart pod)\n" +
-		"   - Interactive stepped execution simulation that transitions pod status from CrashLoopBackOff to Running\n" +
-		"   - Navigable tabs between AI Triage and Telemetry Logs\n" +
-		"7. Use reactive event handlers like @click=\"${() => { state.filter = 'FATAL'; }}\" and @click=\"${() => runRemediation('Rollback')}\".\n" +
-		"8. Style elements with semantic CSS classes: .ephemeris-widget, .widget-header, .diagnosis-card, .blast-radius-card, .action-card, .remediation-btn, .nav-tabs, .tab-btn, .log-container, .log-row.\n" +
+		"6. POLYMORPHIC UI SYNTHESIS (Match the UI archetype to the user's query intent):\n" +
+		"   - If the user asks for LOGS (e.g. 'show me the logs for XXX', 'tail logs'): synthesize a Live Log Stream & Search Console with severity filter pills (ALL, FATAL, ERROR, WARN, INFO), reactive text search input, and a 'Pivot to Root-Cause Triage' button.\n" +
+		"   - If the user asks for ISSUES / ALERTS (e.g. 'show me the list of pods with issues', 'what is failing'): synthesize a Multi-Cluster Fleet Incident Matrix table listing all non-Running pods across data.topology.clusters, with 'Focus in 3D' and 'Triage' buttons per row.\n" +
+		"   - If the user asks for NAMESPACE / WORKLOAD LISTS (e.g. 'show me all the pods in the default namespace'): synthesize a Namespace Workload Inventory table/grid showing pod status distribution, CPU/Memory bars, and 'Focus in 3D' buttons.\n" +
+		"   - If the user asks for RESOURCE / METRICS COMPARISON (e.g. 'compare memory usage', 'top CPU pods'): synthesize a Resource Saturation Leaderboard with visual progress bars.\n" +
+		"   - If the user asks to TRIAGE / FIX a crashing pod: synthesize a Deep Incident Triage & Remediation Cockpit with Root Cause Analysis, Upstream Blast Radius, Traffic Drain Slider (0-100%), and 1-Click Remediation buttons.\n" +
+		"7. 3D SPATIAL CO-PILOT EVENTS (Use these to cross-bind your UI to the 3D WebGL canvas):\n" +
+		"   - To fly the 3D camera to a pod and select it: container.dispatchEvent(new CustomEvent('ephemeris-select-pod', { bubbles: true, composed: true, detail: { podId: '...', clusterName: '...', namespaceName: '...' } }))\n" +
+		"   - To trigger a follow-up AI prompt or pivot views: container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', { bubbles: true, composed: true, detail: { prompt: '...', podId: '...', resourceUri: '...' } }))\n" +
+		"   - To drain traffic in 3D: container.dispatchEvent(new CustomEvent('ephemeris-traffic-drain', { bubbles: true, composed: true, detail: { podId: '...', percent: 50 } }))\n" +
+		"   - To mark a pod remediated in 3D: container.dispatchEvent(new CustomEvent('ephemeris-remediated', { bubbles: true, composed: true, detail: { podId: '...', action: 'Rollback' } }))\n" +
+		"8. Style elements with semantic CSS classes: .ephemeris-widget, .widget-header, .diagnosis-card, .blast-radius-card, .action-card, .remediation-btn, .nav-tabs, .tab-btn, .log-container, .log-row, .fleet-table, .fleet-row, .focus-3d-btn, .triage-pivot-btn, .filter-pills.\n" +
 		"9. STRICT ARROWJS SYNTAX: Never place expressions inside HTML attribute quotes alongside other text (e.g. NEVER class=\"badge ${color}\" - this causes 'Invalid HTML position' error). Any attribute with an expression MUST be the entire attribute value: class=\"${'badge ' + color}\" or class=\"${() => 'badge ' + color}\".\n"
 }
 
@@ -54,7 +58,7 @@ func BuildUserPrompt(userPrompt string, telemetry *api.TelemetryData) (string, e
 	}
 
 	return fmt.Sprintf(
-		"User Incident Query: %s\nTarget Resource: %s\nLive Telemetry Data:\n%s\n\nGenerate an ArrowJS reactive UI widget tailored to this query and telemetry data.",
+		"User Query: %s\nTarget Scope URI: %s\nLive Telemetry & Topology Data:\n%s\n\nSynthesize the optimal polymorphic ArrowJS reactive UI widget tailored to this query and data.",
 		userPrompt,
 		telemetry.ResourceURI,
 		string(telemetryJSON),

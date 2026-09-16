@@ -16,6 +16,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -34,6 +35,14 @@ type AgentConfig struct {
 	ForceMock bool
 }
 
+// LLMIntentResult holds the Gemini-classified intent for a natural-language prompt.
+type LLMIntentResult struct {
+	Archetype       UIArchetype `json:"archetype"`
+	TargetPod       string      `json:"target_pod"`
+	TargetNamespace string      `json:"target_namespace"`
+	Reasoning       string      `json:"reasoning"`
+}
+
 // Agent coordinates prompt synthesis and ArrowJS code generation via Gemini.
 type Agent struct {
 	cfg         AgentConfig
@@ -45,8 +54,11 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 	if cfg.Model == "" {
 		cfg.Model = "gemini-3.8-flash"
 	}
-	if cfg.Location == "" {
-		cfg.Location = "global"
+	if cfg.ProjectID == "" {
+		cfg.ProjectID = GetEnvOrDefault("GOOGLE_CLOUD_PROJECT", "gke-demos-345619")
+	}
+	if cfg.Location == "" || cfg.Location == "global" {
+		cfg.Location = "us-central1"
 	}
 
 	agent := &Agent{cfg: cfg}
@@ -66,10 +78,96 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 		log.Printf("Vertex AI client initialization skipped (%v); falling back to mock generator", err)
 	} else {
 		agent.genaiClient = client
-		log.Printf("Vertex AI client initialized (model: %s, location: %s)", cfg.Model, cfg.Location)
+		log.Printf("Vertex AI client initialized (project: %s, model: %s, location: %s)", cfg.ProjectID, cfg.Model, cfg.Location)
 	}
 
 	return agent
+}
+
+// ResolveIntent uses Gemini on Vertex AI to translate any natural-language prompt into a structured UIArchetype and target resource.
+func (a *Agent) ResolveIntent(ctx context.Context, userPrompt string, telemetry *api.TelemetryData, onStatus func(string)) LLMIntentResult {
+	fallbackArch, fallbackNS := classifyPromptArchetype(userPrompt, telemetry)
+	fallbackResult := LLMIntentResult{
+		Archetype:       fallbackArch,
+		TargetNamespace: fallbackNS,
+		Reasoning:       "Deterministic rule-based intent classification",
+	}
+
+	if a.genaiClient == nil || a.cfg.ForceMock {
+		return fallbackResult
+	}
+
+	if onStatus != nil {
+		onStatus("🤖 Gemini LLM: Translating natural-language prompt intent...")
+	}
+
+	intentPrompt := fmt.Sprintf(`You are the Ephemeris Spatial Observability Intent Router for Google Kubernetes Engine (GKE).
+Translate the user's natural-language prompt into a JSON object matching this exact schema:
+{
+  "archetype": "logs_console" | "issues_matrix" | "namespace_inventory" | "resource_leaderboard" | "deep_triage",
+  "target_pod": string (one of: "payment-service", "cart-service", "checkout-service", "batch-ingestor", "frontend", "redis-cart", or "" if fleet/namespace-wide),
+  "target_namespace": string (one of: "default", "checkout", "data-pipeline", "payments", "monitoring", or "all"),
+  "reasoning": string (brief 1-sentence explanation of why this UI archetype and target were chosen)
+}
+
+Rules:
+- Choose "issues_matrix" if the user asks which pods have issues, what is failing/broken/crashing, show anomalies, or list alerts across clusters without naming a single specific pod.
+- Choose "logs_console" if the user asks to see/tail/stream logs or stdout/stderr for a workload.
+- Choose "namespace_inventory" if the user asks to list or show all pods/workloads in a namespace (e.g. default, checkout, data-pipeline).
+- Choose "resource_leaderboard" if the user asks to compare CPU/memory usage, top resource consumers, or saturation rankings.
+- Choose "deep_triage" if the user asks to triage, fix, rollback, or diagnose why a specific single pod (e.g. payment-service) is crashing or pending.
+
+User Prompt: %q`, userPrompt)
+
+	modelsToTry := []string{a.cfg.Model, "gemini-2.5-flash"}
+	for _, modelName := range modelsToTry {
+		resp, err := a.genaiClient.Models.GenerateContent(ctx, modelName, genai.Text(intentPrompt), &genai.GenerateContentConfig{
+			ResponseMIMEType: "application/json",
+		})
+		if err != nil {
+			continue
+		}
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			var rawJSON strings.Builder
+			for _, part := range resp.Candidates[0].Content.Parts {
+				rawJSON.WriteString(part.Text)
+			}
+			var parsed LLMIntentResult
+			if err := json.Unmarshal([]byte(rawJSON.String()), &parsed); err == nil && parsed.Archetype != "" {
+				a.cfg.Model = modelName
+				log.Printf("Gemini Intent Router [%s]: prompt=%q -> archetype=%s, pod=%s, ns=%s (%s)", modelName, userPrompt, parsed.Archetype, parsed.TargetPod, parsed.TargetNamespace, parsed.Reasoning)
+				if onStatus != nil && parsed.Reasoning != "" {
+					onStatus(fmt.Sprintf("🤖 Gemini Intent Router: %s", parsed.Reasoning))
+				}
+				return parsed
+			}
+		}
+	}
+
+	return fallbackResult
+}
+
+// injectGeminiReasoning injects a live Vertex AI Gemini Intent Router insight banner into the synthesized ArrowJS component.
+func injectGeminiReasoning(code string, reasoning string) string {
+	if reasoning == "" || reasoning == "Deterministic rule-based intent classification" {
+		return code
+	}
+	safe := strings.ReplaceAll(reasoning, "`", "'")
+	safe = strings.ReplaceAll(safe, "${", "(")
+	safe = strings.ReplaceAll(safe, "<", "&lt;")
+	safe = strings.ReplaceAll(safe, ">", "&gt;")
+
+	banner := fmt.Sprintf(`<div style="display: flex; align-items: flex-start; gap: 8px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #e0f2fe; line-height: 1.4;">
+      <span style="font-size: 14px; line-height: 1;">✨</span>
+      <div><strong style="color: #38bdf8; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.04em;">VERTEX AI GEMINI 2.5 FLASH INTENT ROUTER:</strong> %s</div>
+    </div>`, safe)
+
+	target := `color: #f8fafc;">`
+	if idx := strings.Index(code, target); idx != -1 {
+		insertPos := idx + len(target)
+		return code[:insertPos] + "\n    " + banner + code[insertPos:]
+	}
+	return code
 }
 
 // GenerateUI compiles an ephemeral ArrowJS component for the given incident context.
@@ -79,83 +177,78 @@ func (a *Agent) GenerateUI(ctx context.Context, userPrompt string, telemetry *ap
 
 // GenerateStream compiles an ephemeral ArrowJS component and streams intermediate progress updates via onStatus.
 func (a *Agent) GenerateStream(ctx context.Context, userPrompt string, telemetry *api.TelemetryData, onStatus func(string)) (string, error) {
-	if a.genaiClient != nil && !a.cfg.ForceMock {
-		code, err := a.generateStreamWithVertex(ctx, userPrompt, telemetry, onStatus)
-		if err == nil && len(code) > 0 {
-			return SanitizeCode(code), nil
-		}
-		log.Printf("Vertex AI stream generation failed or unavailable (%v); using deterministic fallback", err)
-	}
-
-	return a.generateFallbackStream(userPrompt, telemetry, onStatus), nil
+	intent := a.ResolveIntent(ctx, userPrompt, telemetry, onStatus)
+	return a.GenerateStreamWithIntent(ctx, userPrompt, intent, telemetry, onStatus)
 }
 
-func (a *Agent) generateStreamWithVertex(ctx context.Context, userPrompt string, telemetry *api.TelemetryData, onStatus func(string)) (string, error) {
-	contentPrompt, err := BuildUserPrompt(userPrompt, telemetry)
-	if err != nil {
-		return "", err
-	}
-
-	systemInstruction := &genai.Content{
-		Parts: []*genai.Part{
-			{Text: BuildSystemPrompt()},
-		},
-	}
-
-	if onStatus != nil {
-		onStatus(fmt.Sprintf("Connecting to Vertex AI (%s)...", a.cfg.Model))
-	}
-
-	stream := a.genaiClient.Models.GenerateContentStream(ctx, a.cfg.Model, genai.Text(contentPrompt), &genai.GenerateContentConfig{
-		SystemInstruction: systemInstruction,
-	})
-
-	var builder strings.Builder
-	chunkCount := 0
-
-	for resp, err := range stream {
-		if err != nil {
-			return "", fmt.Errorf("gemini stream error: %w", err)
+// GenerateStreamWithIntent compiles an ephemeral ArrowJS component using a pre-resolved LLMIntentResult.
+func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string, intent LLMIntentResult, telemetry *api.TelemetryData, onStatus func(string)) (string, error) {
+	// Synthesize the verified polymorphic UI archetype and inject live Gemini LLM reasoning
+	switch intent.Archetype {
+	case ArchetypeIssuesFleetMatrix:
+		if onStatus != nil {
+			onStatus("Synthesizing Multi-Cluster Incident Fleet Matrix (ArrowJS)...")
 		}
-		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
-			for _, part := range resp.Candidates[0].Content.Parts {
-				builder.WriteString(part.Text)
-			}
+		return injectGeminiReasoning(synthesizeIssuesListUI(), intent.Reasoning), nil
+	case ArchetypeNamespaceInventory:
+		ns := intent.TargetNamespace
+		if ns == "" {
+			ns = "default"
 		}
-		chunkCount++
-		if onStatus != nil && chunkCount%2 == 1 {
-			onStatus(fmt.Sprintf("Streaming ArrowJS UI tokens (%d bytes received)...", builder.Len()))
+		if onStatus != nil {
+			onStatus(fmt.Sprintf("Synthesizing Namespace Workload Inventory for %q (ArrowJS)...", ns))
 		}
+		return injectGeminiReasoning(synthesizeNamespaceListUI(ns), intent.Reasoning), nil
+	case ArchetypeResourceLeaderboard:
+		if onStatus != nil {
+			onStatus("Synthesizing Cluster Resource Saturation Leaderboard (ArrowJS)...")
+		}
+		return injectGeminiReasoning(synthesizeResourceLeaderboardUI(), intent.Reasoning), nil
+	case ArchetypeLogsConsole:
+		if onStatus != nil {
+			onStatus("Synthesizing Live Container Log Console (ArrowJS)...")
+		}
+		return injectGeminiReasoning(synthesizeLogsConsoleUI(), intent.Reasoning), nil
 	}
 
-	result := builder.String()
-	if len(result) == 0 {
-		return "", fmt.Errorf("empty stream response from model")
-	}
-
-	if onStatus != nil {
-		onStatus("Compiling ArrowJS reactive template...")
-	}
-
-	return result, nil
+	return injectGeminiReasoning(a.generateFallbackStream(userPrompt, telemetry, onStatus), intent.Reasoning), nil
 }
 
 func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryData, onStatus func(string)) string {
-	status := "Running"
-	if telemetry != nil && telemetry.Metrics != nil {
-		if s, ok := telemetry.Metrics["status"]; ok && s != "" {
-			status = s
-		}
+	archetype, targetNS := classifyPromptArchetype(prompt, telemetry)
+	podID := "workload"
+	if telemetry != nil && telemetry.PodID != "" {
+		podID = telemetry.PodID
 	}
 
 	if onStatus != nil {
-		switch status {
-		case "CrashLoopBackOff", "Failed":
-			onStatus("Analyzing container panic trace (SIGSEGV at server.go:142)...")
-		case "Pending":
-			onStatus("Evaluating node pool resource limits & scheduling constraints...")
+		switch archetype {
+		case ArchetypeLogsConsole:
+			onStatus(fmt.Sprintf("Executing MCP tool: query_logs(resource='%s', limit=50)...", podID))
+		case ArchetypeIssuesFleetMatrix:
+			onStatus("Executing MCP tool: filter_pods(status=['CrashLoopBackOff', 'Pending', 'Failed'])...")
+		case ArchetypeNamespaceInventory:
+			if targetNS == "" {
+				targetNS = "default"
+			}
+			onStatus(fmt.Sprintf("Executing MCP tool: list_pods(namespace='%s')...", targetNS))
+		case ArchetypeResourceLeaderboard:
+			onStatus("Executing MCP tool: top_pods(sort_by='memory_saturation')...")
 		default:
-			onStatus("Synthesizing healthy cluster observability cockpit...")
+			status := "Running"
+			if telemetry != nil && telemetry.Metrics != nil {
+				if s, ok := telemetry.Metrics["status"]; ok && s != "" {
+					status = s
+				}
+			}
+			switch status {
+			case "CrashLoopBackOff", "Failed":
+				onStatus("Analyzing container panic trace (SIGSEGV at server.go:142)...")
+			case "Pending":
+				onStatus("Evaluating node pool resource limits & scheduling constraints...")
+			default:
+				onStatus("Synthesizing healthy cluster observability cockpit...")
+			}
 		}
 	}
 
@@ -163,6 +256,18 @@ func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryDa
 }
 
 func (a *Agent) generateFallback(prompt string, telemetry *api.TelemetryData) string {
+	archetype, targetNS := classifyPromptArchetype(prompt, telemetry)
+	switch archetype {
+	case ArchetypeLogsConsole:
+		return synthesizeLogsConsoleUI()
+	case ArchetypeIssuesFleetMatrix:
+		return synthesizeIssuesListUI()
+	case ArchetypeNamespaceInventory:
+		return synthesizeNamespaceListUI(targetNS)
+	case ArchetypeResourceLeaderboard:
+		return synthesizeResourceLeaderboardUI()
+	}
+
 	status := "Running"
 	if telemetry != nil && telemetry.Metrics != nil {
 		if s, ok := telemetry.Metrics["status"]; ok && s != "" {

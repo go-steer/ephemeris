@@ -170,3 +170,76 @@ func TestAgent_GenerateStream_StatusCallbacks(t *testing.T) {
 		t.Errorf("expected panic trace analysis status, got %q", statusMessages[0])
 	}
 }
+
+func TestAgent_PolymorphicArchetypes(t *testing.T) {
+	ctx := context.Background()
+	agent := NewAgent(ctx, AgentConfig{
+		Model:     "gemini-3.8-flash",
+		ForceMock: true,
+	})
+
+	telemProvider := telemetry.NewMockProvider()
+	telemData, err := telemProvider.QueryLogs(ctx, "gke://production/payment-service", 10)
+	if err != nil {
+		t.Fatalf("QueryLogs failed: %v", err)
+	}
+
+	cases := []struct {
+		name             string
+		prompt           string
+		expectedType     UIArchetype
+		expectedContains string
+	}{
+		{
+			name:             "logs_console",
+			prompt:           "show me the logs for payment-service",
+			expectedType:     ArchetypeLogsConsole,
+			expectedContains: "Live Log Console",
+		},
+		{
+			name:             "issues_matrix",
+			prompt:           "show me the list of pods with issues",
+			expectedType:     ArchetypeIssuesFleetMatrix,
+			expectedContains: "Multi-Cluster Incident Fleet Matrix",
+		},
+		{
+			name:             "which_pods_have_issues",
+			prompt:           "which pods have issues",
+			expectedType:     ArchetypeIssuesFleetMatrix,
+			expectedContains: "Multi-Cluster Incident Fleet Matrix",
+		},
+		{
+			name:             "namespace_inventory",
+			prompt:           "show me all the pods in the default namespace",
+			expectedType:     ArchetypeNamespaceInventory,
+			expectedContains: "Namespace Workload Inventory",
+		},
+		{
+			name:             "resource_leaderboard",
+			prompt:           "compare memory usage across pods",
+			expectedType:     ArchetypeResourceLeaderboard,
+			expectedContains: "Workload Resource Saturation Leaderboard",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotType, _ := classifyPromptArchetype(tc.prompt, telemData)
+			if gotType != tc.expectedType {
+				t.Errorf("classifyPromptArchetype(%q) = %v, expected %v", tc.prompt, gotType, tc.expectedType)
+			}
+
+			var statusMsgs []string
+			code, err := agent.GenerateStream(ctx, tc.prompt, telemData, func(msg string) {
+				statusMsgs = append(statusMsgs, msg)
+			})
+			if err != nil {
+				t.Fatalf("GenerateStream failed for %q: %v", tc.prompt, err)
+			}
+			if !strings.Contains(code, tc.expectedContains) {
+				t.Errorf("expected generated code for %q to contain %q", tc.prompt, tc.expectedContains)
+			}
+			assertNoPartialAttributeInterpolation(t, code)
+		})
+	}
+}

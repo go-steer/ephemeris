@@ -359,6 +359,158 @@ describe('initializeApp', () => {
     );
   });
 
+  it('opens Dedicated Object Chat & Inspector window on 3D pod click and handles object prompt submit', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'production-us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                {
+                  id: 'pod-payment',
+                  name: 'payment-service',
+                  status: 'CrashLoopBackOff',
+                },
+                {
+                  id: 'pod-frontend',
+                  name: 'frontend',
+                  status: 'Running',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+
+    let sentPrompt = null;
+    app.ws.sendPrompt = (nodeId, uri, text) => {
+      sentPrompt = { nodeId, uri, text };
+    };
+
+    // Simulate clicking payment-service in 3D canvas
+    app.controls.onSelectNode(
+      { id: 'pod-payment', name: 'payment-service', status: 'CrashLoopBackOff' },
+      { clusterName: 'production-us-central1', namespaceName: 'default' }
+    );
+
+    expect(app.panel.isVisible).toBe(true);
+    expect(document.getElementById('panel-object-tag').textContent).toBe('@payment-service');
+
+    // Type into dedicated object chat input and submit
+    const objInput = document.getElementById('panel-object-prompt-input');
+    const objSendBtn = document.getElementById('panel-object-send-btn');
+    objInput.value = 'Show me the logs for payment-service';
+    objSendBtn.click();
+
+    expect(sentPrompt).not.toBeNull();
+    expect(sentPrompt.uri).toBe('gke://default/payment-service');
+    expect(sentPrompt.text).toBe('Show me the logs for payment-service');
+  });
+
+  it('filters 3D spatial mesh and sends fleet/namespace URI on polymorphic queries', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'production-us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                { id: 'pod-payment', name: 'payment-service', status: 'CrashLoopBackOff' },
+                { id: 'pod-frontend', name: 'frontend', status: 'Running' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+
+    let sentPrompt = null;
+    app.ws.sendPrompt = (nodeId, uri, text) => {
+      sentPrompt = { nodeId, uri, text };
+    };
+
+    // Trigger fleet issues query via HUD chip
+    const issuesChip = document.getElementById('hud-chip-issues');
+    issuesChip.click();
+
+    expect(sentPrompt).not.toBeNull();
+    expect(sentPrompt.uri).toBe('gke://fleet/issues');
+
+    // Verify 3D scene filtering dimmed non-failing pods
+    const frontendMesh = app.topologyMesh.podMap.get('frontend');
+    const paymentMesh = app.topologyMesh.podMap.get('payment-service');
+    expect(frontendMesh.material.opacity).toBeCloseTo(0.22, 2);
+    expect(paymentMesh.material.opacity).toBeCloseTo(1.0, 2);
+  });
+
+  it('handles bi-directional ephemeris-select-pod and ephemeris-prompt-query events from ArrowJS UI', () => {
+    const app = initializeApp();
+    const mockData = {
+      clusters: [
+        {
+          name: 'production-us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              pods: [
+                { id: 'pod-payment', name: 'payment-service', status: 'CrashLoopBackOff' },
+                { id: 'pod-frontend', name: 'frontend', status: 'Running' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    app.ws.onTopology(mockData);
+
+    let sentPrompt = null;
+    app.ws.sendPrompt = (nodeId, uri, text) => {
+      sentPrompt = { nodeId, uri, text };
+    };
+
+    // Dispatch ephemeris-select-pod from generated UI row
+    window.dispatchEvent(
+      new CustomEvent('ephemeris-select-pod', {
+        detail: {
+          podId: 'frontend',
+          clusterName: 'production-us-central1',
+          namespaceName: 'default',
+        },
+      })
+    );
+
+    expect(app.hud.selectedPod.name).toBe('frontend');
+    expect(document.getElementById('hud-status-msg').textContent).toContain(
+      'Focused 3D camera on workload frontend.'
+    );
+
+    // Dispatch ephemeris-prompt-query from generated UI button
+    window.dispatchEvent(
+      new CustomEvent('ephemeris-prompt-query', {
+        detail: {
+          prompt: 'Show me the logs for frontend',
+          podId: 'frontend',
+          resourceUri: 'gke://default/frontend',
+        },
+      })
+    );
+
+    expect(sentPrompt).not.toBeNull();
+    expect(sentPrompt.uri).toBe('gke://default/frontend');
+    expect(sentPrompt.text).toBe('Show me the logs for frontend');
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

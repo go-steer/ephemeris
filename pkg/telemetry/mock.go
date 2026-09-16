@@ -211,25 +211,33 @@ func (m *MockProvider) healthyServiceLogs(resourceURI string, limit int) *api.Te
 		podName = parts[len(parts)-1]
 	}
 
-	rawLogs := []api.LogEntry{
-		{
-			Timestamp: t(60),
-			Severity:  "INFO",
-			Message:   fmt.Sprintf("Service health check OK (200 OK, latency=4ms, target=%s)", podName),
-			Source:    "healthz.go:19",
-		},
-		{
-			Timestamp: t(40),
-			Severity:  "INFO",
-			Message:   fmt.Sprintf("Handled 142 HTTP requests in last 30s window (p99=12ms, errors=0, service=%s)", podName),
-			Source:    "metrics.go:55",
-		},
-		{
-			Timestamp: t(10),
-			Severity:  "INFO",
-			Message:   "Service mesh ingress mTLS handshake successful (upstream=envoy-sidecar)",
-			Source:    "mesh.go:82",
-		},
+	var rawLogs []api.LogEntry
+	switch {
+	case strings.Contains(podName, "cart"):
+		rawLogs = []api.LogEntry{
+			{Timestamp: t(120), Severity: "INFO", Message: "cart-service v1.8.2 initialized Redis cluster pool (redis-cart:6379)", Source: "redis.go:44"},
+			{Timestamp: t(95), Severity: "INFO", Message: "GET /cart/user-88412 -> 200 OK (items=3, cache_hit=true, latency=2.1ms)", Source: "handler.go:112"},
+			{Timestamp: t(70), Severity: "WARNING", Message: "Upstream gRPC call to payment-service:50051 exceeded deadline (timeout=5000ms, retry=1/3)", Source: "checkout_client.go:79"},
+			{Timestamp: t(45), Severity: "ERROR", Message: "Failed to pre-authorize cart checkout via payment-service: rpc error: code = Unavailable desc = connection closed", Source: "checkout_client.go:94"},
+			{Timestamp: t(25), Severity: "WARNING", Message: "Circuit breaker Half-Open for downstream target payment-service.default.svc.cluster.local", Source: "breaker.go:53"},
+			{Timestamp: t(10), Severity: "INFO", Message: "Health probe /healthz -> 200 OK (redis_latency=0.8ms, active_carts=1420)", Source: "health.go:22"},
+		}
+	case strings.Contains(podName, "checkout"):
+		rawLogs = []api.LogEntry{
+			{Timestamp: t(110), Severity: "INFO", Message: "checkout-service orchestrator ready on :5050", Source: "main.go:31"},
+			{Timestamp: t(80), Severity: "INFO", Message: "Order #ORD-99201: currency conversion USD->EUR completed via currency-service (3.4ms)", Source: "workflow.go:142"},
+			{Timestamp: t(50), Severity: "ERROR", Message: "Order #ORD-99204 failed at step ChargeCard: downstream payment-service returned 503 Service Unavailable", Source: "workflow.go:188"},
+			{Timestamp: t(30), Severity: "WARNING", Message: "Queuing order #ORD-99204 for asynchronous retry via pubsub-orders-dlq", Source: "retry.go:61"},
+			{Timestamp: t(8), Severity: "INFO", Message: "Metrics scrape completed: active_checkouts=18, failed_payments_5m=14", Source: "metrics.go:29"},
+		}
+	default:
+		rawLogs = []api.LogEntry{
+			{Timestamp: t(120), Severity: "INFO", Message: fmt.Sprintf("Starting %s server worker pool (threads=8, env=production)", podName), Source: "main.go:28"},
+			{Timestamp: t(90), Severity: "INFO", Message: fmt.Sprintf("Service health check OK (200 OK, latency=4ms, target=%s)", podName), Source: "healthz.go:19"},
+			{Timestamp: t(65), Severity: "INFO", Message: fmt.Sprintf("Handled 142 HTTP/gRPC requests in last 30s window (p99=12ms, errors=0, service=%s)", podName), Source: "metrics.go:55"},
+			{Timestamp: t(40), Severity: "INFO", Message: " Envoy sidecar mTLS certificate rotation check: valid for 21d 14h", Source: "mesh.go:82"},
+			{Timestamp: t(15), Severity: "INFO", Message: fmt.Sprintf("Memory GC cycle completed (freed=18MiB, heap_in_use=194MiB, target=%s)", podName), Source: "runtime.go:104"},
+		}
 	}
 
 	if len(rawLogs) > limit {
@@ -238,12 +246,12 @@ func (m *MockProvider) healthyServiceLogs(resourceURI string, limit int) *api.Te
 
 	return &api.TelemetryData{
 		ResourceURI: resourceURI,
-		PodID:       "pod-" + podName,
+		PodID:       podName,
 		Metrics: map[string]string{
 			"status":   "Running",
 			"restarts": "0",
-			"cpu":      "120m",
-			"memory":   "256Mi",
+			"cpu":      "180m",
+			"memory":   "312Mi",
 			"uptime":   "9d 14h",
 			"p99":      "12ms",
 		},

@@ -111,10 +111,11 @@ export class HUDOverlay {
 
         <div class="quick-chips-row">
           <span class="chips-label">Quick Actions:</span>
-          <button class="chip-btn" data-prompt="Triage incident, identify panic root cause, and execute 1-click rollback.">⚡ 1-Click Triage & Fix</button>
-          <button class="chip-btn" data-prompt="Analyze stack trace, uninitialized DB pool references, and panic origin.">🔍 Root Cause Analysis</button>
-          <button class="chip-btn" data-prompt="Evaluate upstream checkout-service blast radius and HTTP 500 error rates.">💥 Evaluate Blast Radius</button>
-          <button class="chip-btn" data-prompt="Analyze memory pressure, OOM events, and container resource limits.">📦 Memory & OOM Pressure</button>
+          <button class="chip-btn" id="hud-chip-issues" data-prompt="Show me the list of pods with issues">🚨 Pods with Issues</button>
+          <button class="chip-btn" id="hud-chip-ns" data-prompt="Show me all the pods in the default namespace">📦 Default Namespace Pods</button>
+          <button class="chip-btn" id="hud-chip-logs" data-prompt="Show me the logs for payment-service">📋 Payment Service Logs</button>
+          <button class="chip-btn" id="hud-chip-leaderboard" data-prompt="Compare CPU and memory usage across pods">📊 Resource Leaderboard</button>
+          <button class="chip-btn" id="hud-chip-triage" data-prompt="Triage incident, identify panic root cause, and execute 1-click rollback.">⚡ 1-Click Triage & Fix</button>
         </div>
 
         <div class="status-notification-line" id="hud-status-line">
@@ -164,6 +165,7 @@ export class HUDOverlay {
     const submitPrompt = (customText) => {
       const text = customText !== undefined ? customText : input.value.trim();
       if (!text) return;
+      input.value = '';
       if (this.onPromptSubmit) {
         this.onPromptSubmit(text, this.selectedPod, this.selectedMeta);
       }
@@ -171,13 +173,23 @@ export class HUDOverlay {
 
     investBtn.addEventListener('click', () => submitPrompt());
 
+    input.addEventListener('focus', () => {
+      if (input.value) {
+        input.select();
+      }
+    });
+
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
         submitPrompt();
-      } else if (e.key === 'Escape' && this.selectedPod) {
+      } else if (e.key === 'Escape') {
         e.preventDefault();
-        clearSelectionHandler();
+        if (input.value) {
+          input.value = '';
+        } else if (this.selectedPod) {
+          clearSelectionHandler();
+        }
       } else if (e.key === 'Backspace' && input.value === '' && this.selectedPod) {
         e.preventDefault();
         clearSelectionHandler();
@@ -204,7 +216,6 @@ export class HUDOverlay {
     chipBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
         const query = btn.getAttribute('data-prompt');
-        input.value = query;
         submitPrompt(query);
       });
     });

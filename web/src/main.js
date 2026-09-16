@@ -54,18 +54,32 @@ export function initializeApp() {
   const ws = new WebSocketClient();
   let promptStartTime = null;
 
-  // 4. Wire 3D Scene Selection -> HUD & WebSocket
+  // 4. Wire 3D Scene Selection -> HUD, WebSocket & Dedicated Object Chat Window
   controls.onSelectNode = (pod, meta) => {
     const resourceUri = pod.resource_uri || `gke://${meta.namespaceName || 'default'}/${pod.name}`;
+    topologyMesh.clearFilterHighlight();
     hud.setSelectedPod(pod, meta);
     ws.selectNode(pod.id, resourceUri);
     topologyMesh.setSelectedPod(pod.name || pod.id);
     topologyMesh.highlightBlastRadius(pod.name || pod.id);
+    panel.openObjectInspector(pod, meta);
+  };
+
+  // Wire Dedicated Object Chat Window prompt submission
+  panel.onObjectPromptSubmit = (promptText, pod, meta) => {
+    const podName = pod?.name || pod?.id || 'payment-service';
+    const nsName = meta?.namespaceName || pod?.namespace || 'default';
+    const resourceUri = pod?.resource_uri || `gke://${nsName}/${podName}`;
+    promptStartTime = performance.now();
+    hud.setStatusMessage(`Asking @${podName}: "${promptText}"...`, true);
+    panel.showStreamingProgress(`Synthesizing response for @${podName}...`, podName);
+    ws.sendPrompt(pod?.id || podName, resourceUri, promptText);
   };
 
   hud.onClearSelection = () => {
     topologyMesh.clearSelectedPod();
     topologyMesh.clearBlastRadius();
+    topologyMesh.clearFilterHighlight();
     hud.setStatusMessage(
       'Detached resource context. Prompt is now scoped to cluster-wide mesh.',
       false
@@ -154,7 +168,12 @@ export function initializeApp() {
       }
     }
 
-    // 2. If prompt asks for issues, errors, crash, triage, fix, or if no pod is currently active
+    // 2. If a pod is currently selected in the HUD, use it unless a different pod name was explicitly matched above
+    if (activePod) {
+      return { pod: activePod, meta: hud.selectedMeta };
+    }
+
+    // 3. If no pod is currently active, check if prompt asks for issues/crashes or fallback to first failing pod
     const issueKeywords = [
       'issue',
       'error',
@@ -196,10 +215,6 @@ export function initializeApp() {
           }
         }
       }
-    }
-
-    if (activePod) {
-      return { pod: activePod, meta: hud.selectedMeta };
     }
 
     // Fallback: first available pod
@@ -340,8 +355,202 @@ export function initializeApp() {
   document.addEventListener('ephemeris-traffic-drain', onTrafficDrain);
   window.addEventListener('ephemeris-traffic-drain', onTrafficDrain);
 
+  // Wire Bi-Directional 3D Spatial Co-Pilot Events from ArrowJS UI
+  const onSelectPodFromUI = (e) => {
+    const detail = e.detail || {};
+    const podId = detail.podId;
+    if (!podId) return;
+
+    topologyMesh.clearFilterHighlight();
+
+    // Find matching pod object in topology data
+    let foundPod = null;
+    let foundMeta = {
+      clusterName: detail.clusterName || 'production-us-central1',
+      namespaceName: detail.namespaceName || 'default',
+    };
+    if (currentTopologyData && currentTopologyData.clusters) {
+      for (const c of currentTopologyData.clusters) {
+        for (const ns of c.namespaces || []) {
+          for (const p of ns.pods || []) {
+            if (p.name === podId || p.id === podId) {
+              foundPod = p;
+              foundMeta = { clusterName: c.name, namespaceName: ns.name };
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    let targetMesh = topologyMesh.podMap.get(podId);
+    if (!targetMesh) {
+      for (const [k, m] of topologyMesh.podMap.entries()) {
+        if (typeof k === 'string' && (k.includes(podId) || podId.includes(k))) {
+          targetMesh = m;
+          break;
+        }
+      }
+    }
+
+    if (targetMesh) {
+      controls.focusOnMesh(targetMesh);
+    }
+    topologyMesh.setSelectedPod(podId);
+    if (foundPod) {
+      hud.setSelectedPod(foundPod, foundMeta);
+    }
+    hud.setStatusMessage(`Focused 3D camera on workload ${podId}.`, false);
+  };
+
+  document.addEventListener('ephemeris-select-pod', onSelectPodFromUI);
+  window.addEventListener('ephemeris-select-pod', onSelectPodFromUI);
+
+  const onPromptQueryFromUI = (e) => {
+    const detail = e.detail || {};
+    const promptText = detail.prompt;
+    if (!promptText) return;
+    const podId = detail.podId || (hud.selectedPod && hud.selectedPod.name) || 'payment-service';
+    const resourceUri = detail.resourceUri || `gke://default/${podId}`;
+
+    promptStartTime = performance.now();
+    hud.setStatusMessage(`Synthesizing view for ${podId}: "${promptText}"...`, true);
+    panel.showStreamingProgress(`Synthesizing view for @${podId}...`, podId);
+    ws.sendPrompt(podId, resourceUri, promptText);
+  };
+
+  document.addEventListener('ephemeris-prompt-query', onPromptQueryFromUI);
+  window.addEventListener('ephemeris-prompt-query', onPromptQueryFromUI);
+
+  const isFleetIssuesQuery = (pLower) => {
+    const explicitPods = [
+      'payment-service',
+      'payment service',
+      'cart-service',
+      'cart service',
+      'checkout-service',
+      'checkout service',
+      'batch-ingestor',
+      'batch ingestor',
+      'redis-cart',
+      'spark-master',
+      'spark-worker',
+    ];
+    if (explicitPods.some((ep) => pLower.includes(ep))) {
+      return false;
+    }
+
+    const issueWords = [
+      'issue',
+      'issues',
+      'failing',
+      'failed',
+      'fail',
+      'broken',
+      'crashing',
+      'crash',
+      'error',
+      'errors',
+      'problem',
+      'problems',
+      'unhealthy',
+      'degraded',
+      'alert',
+      'alerts',
+      'down',
+      'wrong',
+      'anomal',
+    ];
+    const pluralOrQueryWords = [
+      'pods',
+      'workloads',
+      'services',
+      'containers',
+      'which',
+      'what',
+      'list',
+      'show',
+      'all',
+      'any',
+      'fleet',
+      'cluster',
+    ];
+
+    const hasIssue = issueWords.some((iw) => pLower.includes(iw));
+    const hasQuery = pluralOrQueryWords.some((qw) => pLower.includes(qw));
+    return hasIssue && hasQuery;
+  };
+
   // 5. Wire Prompt Submission -> Intelligent Target Resolution & WebSocket
   hud.onPromptSubmit = (promptText, pod, meta) => {
+    const pLower = (promptText || '').toLowerCase();
+
+    // 5a. Check for Fleet-wide Issues Matrix intent ("which pods have issues", "show me the list of pods with issues")
+    if (isFleetIssuesQuery(pLower)) {
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      topologyMesh.highlightPodsByFilter((p) => p.status !== 'Running');
+      controls.resetView();
+      promptStartTime = performance.now();
+      hud.setStatusMessage(`Scanning multi-cluster fleet for active issues...`, true);
+      panel.showStreamingProgress('Querying multi-cluster anomalies...', 'Fleet Incident Matrix');
+      ws.sendPrompt('fleet-issues', 'gke://fleet/issues', promptText);
+      return;
+    }
+
+    // 5b. Check for Namespace Inventory intent ("show me all the pods in the default namespace")
+    if (
+      pLower.includes('namespace') ||
+      pLower.includes('pods in ') ||
+      pLower.includes('workloads in ')
+    ) {
+      let targetNs = 'default';
+      const knownNs = ['default', 'checkout', 'data-pipeline', 'payments', 'monitoring'];
+      for (const ns of knownNs) {
+        if (pLower.includes(ns)) {
+          targetNs = ns;
+          break;
+        }
+      }
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      topologyMesh.highlightPodsByFilter(
+        (p, ud) => ud && ud.namespaceName && ud.namespaceName.toLowerCase().includes(targetNs)
+      );
+      promptStartTime = performance.now();
+      hud.setStatusMessage(`Listing workloads in namespace "${targetNs}"...`, true);
+      panel.showStreamingProgress(
+        `Listing workloads in namespace ${targetNs}...`,
+        `ns/${targetNs}`
+      );
+      ws.sendPrompt(`ns-${targetNs}`, `gke://namespace/${targetNs}`, promptText);
+      return;
+    }
+
+    // 5c. Check for Resource Leaderboard intent ("compare memory usage across pods")
+    if (
+      pLower.includes('leaderboard') ||
+      pLower.includes('compare cpu') ||
+      pLower.includes('compare memory') ||
+      pLower.includes('top cpu') ||
+      pLower.includes('top memory') ||
+      pLower.includes('saturation')
+    ) {
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      topologyMesh.clearFilterHighlight();
+      promptStartTime = performance.now();
+      hud.setStatusMessage(`Comparing cluster resource saturation...`, true);
+      panel.showStreamingProgress(
+        'Ranking workload CPU & memory saturation...',
+        'Resource Leaderboard'
+      );
+      ws.sendPrompt('fleet-leaderboard', 'gke://fleet/leaderboard', promptText);
+      return;
+    }
+
+    // 5d. Single-Pod Query (Logs Console or Deep Triage Cockpit)
+    topologyMesh.clearFilterHighlight();
     let targetPod = pod;
     let targetMeta = meta;
 
@@ -440,15 +649,54 @@ export function initializeApp() {
 
   ws.onUIComponent = (msg) => {
     const durationMs = promptStartTime ? performance.now() - promptStartTime : 0;
+    const codeStr = msg.code || '';
+    const archetype = msg.archetype || '';
+
+    let displayTitle = hud.selectedPod ? hud.selectedPod.name : msg.selected_node_id || 'Pod';
+    let displayStatus = hud.selectedPod ? hud.selectedPod.status : 'Running';
+
+    if (archetype === 'issues_matrix' || codeStr.includes('Multi-Cluster Incident Fleet Matrix')) {
+      displayTitle = 'Multi-Cluster Fleet Issues';
+      displayStatus = 'CrashLoopBackOff';
+      panel.activeObject = null;
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      topologyMesh.highlightPodsByFilter((p) => p.status !== 'Running');
+      controls.resetView();
+    } else if (
+      archetype === 'namespace_inventory' ||
+      codeStr.includes('Namespace Workload Inventory')
+    ) {
+      const ns = msg.target_namespace || 'default';
+      displayTitle = `Namespace Inventory: ${ns}`;
+      displayStatus = 'Running';
+      panel.activeObject = null;
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      topologyMesh.highlightPodsByFilter(
+        (p, ud) =>
+          ns === 'all' || (ud && ud.namespaceName && ud.namespaceName.toLowerCase().includes(ns))
+      );
+    } else if (
+      archetype === 'resource_leaderboard' ||
+      codeStr.includes('Workload Resource Saturation Leaderboard')
+    ) {
+      displayTitle = 'Resource Leaderboard';
+      displayStatus = 'Running';
+      panel.activeObject = null;
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      topologyMesh.clearFilterHighlight();
+    }
+
     hud.setStatusMessage(
-      `UI ready in ${(durationMs / 1000).toFixed(2)}s. Displaying reactive triage widget.`,
+      `UI ready in ${(durationMs / 1000).toFixed(2)}s. Displaying ${displayTitle}.`,
       false
     );
 
-    const activePod = hud.selectedPod;
     panel.mount(msg.code, msg.telemetry, {
-      podId: activePod ? activePod.name : msg.selected_node_id || 'Pod',
-      status: activePod ? activePod.status : 'Running',
+      podId: displayTitle,
+      status: displayStatus,
       durationMs: durationMs,
     });
   };

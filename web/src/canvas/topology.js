@@ -968,6 +968,41 @@ export class TopologyMesh {
   }
 
   /**
+   * Highlights 3D pods matching the predicate and dims non-matching pods.
+   *
+   * @param {function(object, object): boolean} predicateFn - Returns true if pod should stay highlighted.
+   */
+  highlightPodsByFilter(predicateFn) {
+    if (typeof predicateFn !== 'function') return;
+    for (const mesh of this.podMeshes) {
+      if (!mesh || !mesh.userData) continue;
+      const matches = Boolean(predicateFn(mesh.userData.pod || {}, mesh.userData));
+      if (mesh.material) {
+        mesh.material.transparent = true;
+        mesh.material.opacity = matches ? 1.0 : 0.22;
+      }
+      if (mesh.userData.nameSprite && mesh.userData.nameSprite.material) {
+        mesh.userData.nameSprite.material.opacity = matches ? 1.0 : 0.3;
+      }
+    }
+  }
+
+  /**
+   * Restores all 3D pods to full opacity after spatial scene filtering.
+   */
+  clearFilterHighlight() {
+    for (const mesh of this.podMeshes) {
+      if (!mesh) continue;
+      if (mesh.material) {
+        mesh.material.opacity = 1.0;
+      }
+      if (mesh.userData && mesh.userData.nameSprite && mesh.userData.nameSprite.material) {
+        mesh.userData.nameSprite.material.opacity = 1.0;
+      }
+    }
+  }
+
+  /**
    * Returns spatial coordinates for a given cluster name.
    * @param {string} clusterName
    * @returns {THREE.Vector3|null}
@@ -982,6 +1017,7 @@ export class TopologyMesh {
 
   clear() {
     this.clearSelectedPod();
+    this.clearFilterHighlight();
     while (this.group.children.length > 0) {
       const child = this.group.children[0];
       this.group.remove(child);

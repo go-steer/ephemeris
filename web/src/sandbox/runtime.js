@@ -870,6 +870,286 @@ const SHADOW_CSS = `
   margin: 0 0 6px 0;
   color: #ea4335;
 }
+
+/* POLYMORPHIC UI ARCHETYPES (Logs Console, Fleet Matrix, Inventory, Leaderboard) */
+.header-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pod-title {
+  font-weight: 700;
+  font-size: 13.5px;
+  color: #00e5ff;
+  letter-spacing: 0.3px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-pill.status-running {
+  background: rgba(0, 230, 118, 0.14);
+  color: #00e676;
+  border: 1px solid rgba(0, 230, 118, 0.45);
+}
+
+.status-pill.status-crashloopbackoff,
+.status-pill.status-failed {
+  background: rgba(255, 82, 82, 0.18);
+  color: #ff5252;
+  border: 1px solid rgba(255, 82, 82, 0.55);
+}
+
+.status-pill.status-pending {
+  background: rgba(255, 171, 0, 0.16);
+  color: #ffab00;
+  border: 1px solid rgba(255, 171, 0, 0.45);
+}
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 11px;
+  color: #8b949e;
+  margin-top: 2px;
+}
+
+.log-console-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #101624;
+  border: 1px solid #252e42;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-pill {
+  background: #1b2234;
+  color: #9aa0a6;
+  border: 1px solid #252e42;
+  border-radius: 99px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.filter-pill:hover {
+  border-color: #00e5ff;
+  color: #e8eaed;
+}
+
+.filter-pill.active {
+  background: rgba(0, 229, 255, 0.18);
+  border-color: #00e5ff;
+  color: #00e5ff;
+}
+
+.filter-pill.fatal.active,
+.filter-pill.error.active {
+  background: rgba(255, 82, 82, 0.22);
+  border-color: #ff5252;
+  color: #ff5252;
+}
+
+.filter-pill.warn.active {
+  background: rgba(255, 171, 0, 0.2);
+  border-color: #ffab00;
+  color: #ffab00;
+}
+
+.log-search-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.log-search-input {
+  flex: 1;
+  background: #0b0f19;
+  border: 1px solid #252e42;
+  border-radius: 5px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: #e8eaed;
+  font-family: inherit;
+  outline: none;
+}
+
+.log-search-input:focus {
+  border-color: #00e5ff;
+}
+
+.console-tall {
+  max-height: 410px;
+}
+
+.log-src {
+  color: #79828e;
+  font-family: monospace;
+  font-size: 10.5px;
+}
+
+.fleet-table-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.fleet-card {
+  background: #101624;
+  border: 1px solid #252e42;
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.fleet-card:hover,
+.fleet-card.selected {
+  border-color: #00e5ff;
+  background: rgba(0, 229, 255, 0.05);
+}
+
+.fleet-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fleet-pod-ident {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fleet-pod-name {
+  color: #e8eaed;
+  font-size: 13px;
+  font-family: monospace;
+}
+
+.fleet-pod-loc {
+  color: #8b949e;
+  font-size: 11px;
+}
+
+.fleet-pod-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.focus-3d-btn {
+  background: rgba(0, 229, 255, 0.14);
+  color: #00e5ff;
+  border: 1px solid rgba(0, 229, 255, 0.45);
+  border-radius: 5px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.focus-3d-btn:hover {
+  background: rgba(0, 229, 255, 0.25);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.35);
+}
+
+.triage-pivot-btn {
+  background: rgba(255, 82, 82, 0.15);
+  color: #ff5252;
+  border: 1px solid rgba(255, 82, 82, 0.45);
+  border-radius: 5px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.triage-pivot-btn:hover {
+  background: rgba(255, 82, 82, 0.28);
+}
+
+.fleet-pod-summary {
+  color: #bdc1c6;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.fleet-pod-metrics {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.fleet-pod-metrics strong {
+  color: #e8eaed;
+  font-family: monospace;
+}
+
+.metric-label {
+  font-family: monospace;
+  font-size: 11.5px;
+  color: #00e5ff;
+}
+
+.metric-bar-bg {
+  width: 100%;
+  height: 7px;
+  background: #1b2234;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.metric-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.metric-bar-fill.normal {
+  background: linear-gradient(90deg, #00e5ff, #00e676);
+}
+
+.metric-bar-fill.critical {
+  background: linear-gradient(90deg, #ffab00, #ff5252);
+}
 `;
 
 /**
@@ -887,6 +1167,19 @@ export class ArrowSandboxRuntime {
 
     this.container = document.createElement('div');
     this.container.className = 'sandbox-mount';
+    const origDispatch = this.container.dispatchEvent.bind(this.container);
+    this.container.dispatchEvent = (evt) => {
+      if (evt && typeof evt.type === 'string' && evt.type.startsWith('ephemeris-')) {
+        window.dispatchEvent(
+          new CustomEvent(evt.type, {
+            detail: evt.detail,
+            bubbles: true,
+            composed: true,
+          })
+        );
+      }
+      return origDispatch(evt);
+    };
     this.shadowRoot.appendChild(this.container);
   }
 
@@ -916,6 +1209,12 @@ export class ArrowSandboxRuntime {
           .replace(/^```(?:javascript|js)?\s*\n?/i, '')
           .replace(/\n?```\s*$/, '');
       }
+
+      // Rewrite any window.dispatchEvent to container.dispatchEvent so spatial events bubble safely
+      sanitizedCode = sanitizedCode.replace(
+        /\bwindow\.dispatchEvent\s*\(/g,
+        'container.dispatchEvent('
+      );
 
       // If template(container) was omitted, auto-mount if template is defined
       if (!sanitizedCode.includes('(container)') && sanitizedCode.includes('template')) {

@@ -45,6 +45,7 @@ func main() {
 	model := flag.String("model", orchestrator.GetEnvOrDefault("GEMINI_MODEL", "gemini-3.8-flash"), "Gemini model identifier")
 	gkeMCPEndpoint := flag.String("gke-mcp-endpoint", orchestrator.GetEnvOrDefault("GKE_MCP_ENDPOINT", "https://container.googleapis.com/mcp"), "GKE MCP endpoint URL")
 	loggingMCPEndpoint := flag.String("logging-mcp-endpoint", orchestrator.GetEnvOrDefault("LOGGING_MCP_ENDPOINT", "https://logging.googleapis.com/mcp"), "Logging MCP endpoint URL")
+	forceMockLLM := flag.Bool("force-mock-llm", os.Getenv("EPHEMERIS_FORCE_MOCK_LLM") == "true", "Force deterministic mock UI compiler without calling Vertex AI")
 	flag.Parse()
 
 	log.Printf("Starting ephemeris daemon [mode=%s, port=%d, model=%s, location=%s]", *mode, *port, *model, *vertexLocation)
@@ -88,13 +89,12 @@ func main() {
 		telemProvider = telemetry.NewMockProvider()
 	}
 
-	// 2. Initialize Vertex AI Agent
-	forceMock := (*mode == "mock")
+	// 2. Initialize Vertex AI Agent (uses live Vertex AI Gemini when ADC is available, falls back gracefully if offline)
 	agent := orchestrator.NewAgent(ctx, orchestrator.AgentConfig{
 		Model:     *model,
 		Location:  *vertexLocation,
 		ProjectID: *gcpProject,
-		ForceMock: forceMock,
+		ForceMock: *forceMockLLM,
 	})
 
 	// 3. Configure Server
