@@ -1,0 +1,102 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Dependabot Auto-Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Auto-Merge Minor & Patch Updates
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Verify SemVer (Minor/Patch Only) & Enable Auto-Merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GRAPHQL_URL: ${{ github.graphql_url }}
+          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - << 'EOF'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          title = os.environ.get("PR_TITLE", "")
+          body = os.environ.get("PR_BODY", "")
+          text = f"{title}\n{body}"
+
+          # Match patterns like "from 1.79.3 to 1.83.2" or "from v4.1.9 to v4.1.11"
+          matches = re.findall(r"from\s+v?(\d+)\.(\d+)\.(\d+)[^\s]*\s+to\s+v?(\d+)\.(\d+)\.(\d+)", text, re.IGNORECASE)
+
+          if not matches:
+              print("No semver version transitions detected in PR title/body. Skipping auto-merge.")
+              sys.exit(0)
+
+          for old_maj, old_min, old_patch, new_maj, new_min, new_patch in matches:
+              print(f"Detected update: {old_maj}.{old_min}.{old_patch} -> {new_maj}.{new_min}.{new_patch}")
+              if int(old_maj) != int(new_maj):
+                  print(f"Major version bump detected ({old_maj} -> {new_maj}). Skipping auto-merge for manual review.")
+                  sys.exit(0)
+
+          print("All dependency updates are minor or patch bumps. Enabling GitHub native squash auto-merge...")
+
+          query = """
+          mutation EnableAutoMerge($pullRequestId: ID!) {
+            enablePullRequestAutoMerge(input: {
+              pullRequestId: $pullRequestId,
+              mergeMethod: SQUASH
+            }) {
+              pullRequest {
+                number
+                autoMergeRequest {
+                  enabledAt
+                }
+              }
+            }
+          }
+          """
+
+          payload = json.dumps({
+              "query": query,
+              "variables": {"pullRequestId": os.environ["PR_NODE_ID"]}
+          }).encode("utf-8")
+
+          req = urllib.request.Request(
+              os.environ["GRAPHQL_URL"],
+              data=payload,
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+              method="POST"
+          )
+
+          with urllib.request.urlopen(req) as resp:
+              result = json.loads(resp.read().decode("utf-8"))
+              if "errors" in result:
+                  print(f"GraphQL error: {json.dumps(result['errors'], indent=2)}")
+                  sys.exit(1)
+              print(f"Successfully enabled auto-merge: {json.dumps(result['data'], indent=2)}")
+          EOF
