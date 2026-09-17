@@ -240,7 +240,27 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		s.broadcastTopology(topo)
 		_ = s.writeJSON(conn, state, api.ServerMessage{
 			Type:    api.MsgTypeStatus,
-			Message: fmt.Sprintf("⚡ Chaos Scenario Injected: %s (broadcasting live topology & k8s-lookout findings)", scenarioID),
+			Message: fmt.Sprintf("⚡ Chaos Scenario Injected: %s — running k8s-lookout diagnostics...", scenarioID),
+		})
+
+		telemData := &api.TelemetryData{
+			ResourceURI: "gke://fleet/issues",
+			Topology:    topo,
+		}
+		intent := LLMIntentResult{
+			Archetype: ArchetypeIssuesFleetMatrix,
+			Reasoning: fmt.Sprintf("Scenario %q injected; displaying fleet-wide incident matrix and k8s-lookout findings.", scenarioID),
+		}
+		code, _ := s.agent.GenerateStreamWithIntent(ctx, "show fleet issues", intent, telemData, nil)
+		_ = s.writeJSON(conn, state, api.ServerMessage{
+			Type: api.MsgTypeUIComponent,
+			UI: &api.UIComponentData{
+				ResourceURI: "gke://fleet/issues",
+				Prompt:      fmt.Sprintf("Scenario: %s", scenarioID),
+				Archetype:   string(ArchetypeIssuesFleetMatrix),
+				Code:        code,
+				Telemetry:   telemData,
+			},
 		})
 
 	case api.MsgTypePrompt:

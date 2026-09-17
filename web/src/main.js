@@ -99,8 +99,16 @@ export function initializeApp() {
   };
 
   hud.onScenarioSelect = (scenarioId) => {
+    hud.setSelectedPod(null);
+    topologyMesh.clearSelectedPod();
+    topologyMesh.clearBlastRadius();
+    controls.resetView();
     promptStartTime = performance.now();
     hud.setStatusMessage(`Applying scenario "${scenarioId}" across multi-cluster fleet...`, true);
+    panel.showStreamingProgress(
+      `Applying scenario "${scenarioId}" & running k8s-lookout diagnostics...`,
+      'Multi-Cluster Fleet Issues'
+    );
     ws.sendScenario(scenarioId);
   };
 
@@ -690,8 +698,12 @@ export function initializeApp() {
   };
 
   ws.onStatus = (statusMsg) => {
+    if (typeof statusMsg === 'string' && statusMsg.startsWith('✓')) {
+      hud.setStatusMessage(statusMsg, false);
+      return;
+    }
     hud.setStatusMessage(statusMsg, true);
-    const activePodName = hud.selectedPod ? hud.selectedPod.name : 'Pod';
+    const activePodName = hud.selectedPod ? hud.selectedPod.name : 'Multi-Cluster Fleet Issues';
     panel.showStreamingProgress(statusMsg, activePodName);
   };
 
