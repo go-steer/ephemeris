@@ -296,7 +296,7 @@ func hasPartialAttributeInterpolation(code string) bool {
 
 // SynthesizeDynamicArrowJS renders the interactive Kubernetes & CRD Explorer for K8s object queries, or asks Vertex AI Gemini 3.8-flash to synthesize bespoke ArrowJS UI code for custom analytical queries.
 func (a *Agent) SynthesizeDynamicArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, _ *api.TelemetryData, findings []api.LookoutFinding, _ string, onStatus func(string)) string {
-	fallbackCode := synthesizeK8sResourcesUI(topo, intent.TargetCluster)
+	fallbackCode := synthesizeK8sResourcesUI(topo, intent.TargetCluster, userPrompt)
 
 	// Use the rich interactive K8s Controllers & CRD Explorer (with 3D focus and filter tabs) for all K8s controller/CRD queries
 	pLower := strings.ToLower(userPrompt)
@@ -419,7 +419,7 @@ func (a *Agent) generateFallback(prompt string, telemetry *api.TelemetryData) st
 	case ArchetypeIssuesFleetMatrix:
 		return synthesizeIssuesListUI(topo, findings, envelope, targetNS)
 	case ArchetypeDynamicCustom:
-		return synthesizeK8sResourcesUI(topo, targetNS)
+		return synthesizeK8sResourcesUI(topo, targetNS, prompt)
 	case ArchetypeNamespaceInventory:
 		return synthesizeNamespaceListUI(targetNS, topo)
 	case ArchetypeResourceLeaderboard:

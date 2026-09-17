@@ -237,7 +237,13 @@ func TestAgent_PolymorphicArchetypes(t *testing.T) {
 			name:             "k8s_crds_analytics",
 			prompt:           "what CRDs are running in analytics-europe-west1?",
 			expectedType:     ArchetypeDynamicCustom,
-			expectedContains: "K8s & CRD Objects: analytics-europe-west1",
+			expectedContains: `filterKind: "CRD"`,
+		},
+		{
+			name:             "k8s_gateways_and_routes",
+			prompt:           "show gateways and routes",
+			expectedType:     ArchetypeDynamicCustom,
+			expectedContains: `filterKind: "GATEWAY"`,
 		},
 	}
 

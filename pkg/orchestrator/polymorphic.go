@@ -512,7 +512,7 @@ template(container);
 }
 
 // synthesizeK8sResourcesUI generates a reactive ArrowJS K8s Controller & CRD Object Explorer bound to live topology.
-func synthesizeK8sResourcesUI(topology *api.TopologyData, targetCluster string) string {
+func synthesizeK8sResourcesUI(topology *api.TopologyData, targetCluster string, userPrompt string) string {
 	resources := make([]api.K8sResource, 0)
 	targetLower := strings.ToLower(strings.TrimSpace(targetCluster))
 
@@ -615,6 +615,17 @@ func synthesizeK8sResourcesUI(topology *api.TopologyData, targetCluster string) 
 		}
 	}
 
+	pLower := strings.ToLower(userPrompt)
+	initialFilter := "ALL"
+	switch {
+	case strings.Contains(pLower, "gateway") || strings.Contains(pLower, "route") || strings.Contains(pLower, "httproute"):
+		initialFilter = "GATEWAY"
+	case strings.Contains(pLower, "crd") || strings.Contains(pLower, "custom resource") || strings.Contains(pLower, "spark") || strings.Contains(pLower, "ray"):
+		initialFilter = "CRD"
+	case strings.Contains(pLower, "deployment") || strings.Contains(pLower, "statefulset") || strings.Contains(pLower, "service") || strings.Contains(pLower, "controller"):
+		initialFilter = "WORKLOAD"
+	}
+
 	resJSON, _ := json.Marshal(resources)
 	title := "Kubernetes Controllers & CRD Explorer"
 	if targetCluster != "" {
@@ -622,15 +633,25 @@ func synthesizeK8sResourcesUI(topology *api.TopologyData, targetCluster string) 
 	}
 
 	return fmt.Sprintf(`const state = reactive({
-  filterKind: 'ALL',
+  filterKind: %q,
   title: %q,
   resources: %s || []
 });
 
 function getFiltered() {
-  if (state.filterKind === 'ALL') return state.resources || [];
-  if (state.filterKind === 'CRD') return (state.resources || []).filter(r => r.is_crd);
-  return (state.resources || []).filter(r => r.kind.toLowerCase() === state.filterKind.toLowerCase());
+  const list = state.resources || [];
+  if (state.filterKind === 'ALL') return list;
+  if (state.filterKind === 'CRD') return list.filter(r => r.is_crd);
+  if (state.filterKind === 'GATEWAY') return list.filter(r => r.kind === 'Gateway' || r.kind === 'HTTPRoute');
+  if (state.filterKind === 'WORKLOAD') return list.filter(r => r.kind === 'Deployment' || r.kind === 'StatefulSet' || r.kind === 'Service');
+  return list.filter(r => r.kind.toLowerCase() === state.filterKind.toLowerCase());
+}
+
+function getFilterLabel() {
+  if (state.filterKind === 'GATEWAY') return 'Gateways & HTTPRoutes';
+  if (state.filterKind === 'CRD') return 'Custom Resources (CRDs)';
+  if (state.filterKind === 'WORKLOAD') return 'Workload Controllers';
+  return 'All Objects';
 }
 
 function focusTarget(targets) {
@@ -647,13 +668,13 @@ const template = html`+"`"+`
     <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.35);">
       <div style="display: flex; align-items: center; gap: 10px;">
         <span style="background: rgba(168, 85, 247, 0.18); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">${() => state.title}</span>
-        <span style="font-size: 12px; color: #cbd5e1;">${() => getFiltered().length} Objects</span>
+        <span style="font-size: 12px; color: #cbd5e1;">${() => getFilterLabel()} (${() => getFiltered().length})</span>
       </div>
       <div style="display: flex; gap: 6px;">
-        <button @click="${() => { state.filterKind = 'ALL'; }}" style="background: rgba(30, 41, 59, 0.9); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer;">All</button>
-        <button @click="${() => { state.filterKind = 'Gateway'; }}" style="background: rgba(30, 41, 59, 0.9); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer;">Gateway</button>
-        <button @click="${() => { state.filterKind = 'Deployment'; }}" style="background: rgba(30, 41, 59, 0.9); color: #a7f3d0; border: 1px solid rgba(52, 211, 153, 0.3); border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer;">Deployments</button>
-        <button @click="${() => { state.filterKind = 'CRD'; }}" style="background: rgba(30, 41, 59, 0.9); color: #f0abfc; border: 1px solid rgba(217, 70, 239, 0.3); border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer;">CRDs</button>
+        <button @click="${() => { state.filterKind = 'ALL'; }}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (state.filterKind === 'ALL' ? '#c084fc; background: rgba(168, 85, 247, 0.25); color: #fff; font-weight: 700;' : 'rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.9); color: #cbd5e1;')}">All</button>
+        <button @click="${() => { state.filterKind = 'GATEWAY'; }}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (state.filterKind === 'GATEWAY' ? '#38bdf8; background: rgba(56, 189, 248, 0.25); color: #fff; font-weight: 700;' : 'rgba(56, 189, 248, 0.3); background: rgba(30, 41, 59, 0.9); color: #38bdf8;')}">Gateways & Routes</button>
+        <button @click="${() => { state.filterKind = 'WORKLOAD'; }}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (state.filterKind === 'WORKLOAD' ? '#34d399; background: rgba(52, 211, 153, 0.25); color: #fff; font-weight: 700;' : 'rgba(52, 211, 153, 0.3); background: rgba(30, 41, 59, 0.9); color: #a7f3d0;')}">Controllers</button>
+        <button @click="${() => { state.filterKind = 'CRD'; }}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (state.filterKind === 'CRD' ? '#e879f9; background: rgba(217, 70, 239, 0.25); color: #fff; font-weight: 700;' : 'rgba(217, 70, 239, 0.3); background: rgba(30, 41, 59, 0.9); color: #f0abfc;')}">CRDs</button>
       </div>
     </div>
 
@@ -682,7 +703,7 @@ const template = html`+"`"+`
 `+"`"+`;
 
 template(container);
-`, title, string(resJSON))
+`, initialFilter, title, string(resJSON))
 }
 
 type uiNamespacePod struct {
