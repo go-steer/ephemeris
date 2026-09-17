@@ -25,14 +25,16 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/ephemeris/pkg/api"
+	"github.com/go-steer/ephemeris/pkg/mcp"
 )
 
 // AgentConfig configures the Vertex AI client and model target.
 type AgentConfig struct {
-	Model     string
-	Location  string
-	ProjectID string
-	ForceMock bool
+	Model         string
+	Location      string
+	ProjectID     string
+	ForceMock     bool
+	LookoutClient *mcp.LookoutClient
 }
 
 // LLMIntentResult holds the Gemini-classified intent for a natural-language prompt.
@@ -65,7 +67,7 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 
 	agent := &Agent{
 		cfg:         cfg,
-		mastHarness: NewMastHarness(nil),
+		mastHarness: NewMastHarness(cfg.LookoutClient),
 	}
 
 	if cfg.ForceMock {

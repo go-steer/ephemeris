@@ -45,6 +45,7 @@ func main() {
 	model := flag.String("model", orchestrator.GetEnvOrDefault("GEMINI_MODEL", "gemini-3.8-flash"), "Gemini model identifier")
 	gkeMCPEndpoint := flag.String("gke-mcp-endpoint", orchestrator.GetEnvOrDefault("GKE_MCP_ENDPOINT", "https://container.googleapis.com/mcp"), "GKE MCP endpoint URL")
 	loggingMCPEndpoint := flag.String("logging-mcp-endpoint", orchestrator.GetEnvOrDefault("LOGGING_MCP_ENDPOINT", "https://logging.googleapis.com/mcp"), "Logging MCP endpoint URL")
+	lookoutMCPEndpoint := flag.String("lookout-mcp-endpoint", orchestrator.GetEnvOrDefault("LOOKOUT_MCP_ENDPOINT", ""), "Optional external k8s-lookout MCP server endpoint (defaults to built-in engine)")
 	forceMockLLM := flag.Bool("force-mock-llm", os.Getenv("EPHEMERIS_FORCE_MOCK_LLM") == "true", "Force deterministic mock UI compiler without calling Vertex AI")
 	flag.Parse()
 
@@ -55,6 +56,22 @@ func main() {
 	// 1. Initialize providers
 	var gkeProvider gke.Provider
 	var telemProvider telemetry.Provider
+	var lookoutClient *mcp.LookoutClient
+
+	if *lookoutMCPEndpoint != "" {
+		lc, err := mcp.NewClient(ctx, mcp.ClientConfig{
+			BaseURL: *lookoutMCPEndpoint,
+		})
+		if err != nil {
+			log.Printf("Warning: failed to initialize external k8s-lookout MCP client (%v); using built-in k8s-lookout engine", err)
+			lookoutClient = mcp.NewLookoutClient(nil)
+		} else {
+			log.Printf("Using external k8s-lookout MCP server at %s", *lookoutMCPEndpoint)
+			lookoutClient = mcp.NewLookoutClient(lc)
+		}
+	} else {
+		lookoutClient = mcp.NewLookoutClient(nil)
+	}
 
 	if *mode == "live" {
 		if *gcpProject == "" {
@@ -91,10 +108,11 @@ func main() {
 
 	// 2. Initialize Vertex AI Agent (uses live Vertex AI Gemini when ADC is available, falls back gracefully if offline)
 	agent := orchestrator.NewAgent(ctx, orchestrator.AgentConfig{
-		Model:     *model,
-		Location:  *vertexLocation,
-		ProjectID: *gcpProject,
-		ForceMock: *forceMockLLM,
+		Model:         *model,
+		Location:      *vertexLocation,
+		ProjectID:     *gcpProject,
+		ForceMock:     *forceMockLLM,
+		LookoutClient: lookoutClient,
 	})
 
 	// 3. Configure Server
