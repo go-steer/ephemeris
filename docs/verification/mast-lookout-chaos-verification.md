@@ -1,14 +1,26 @@
-# Phase 7 Verification Guide: `go-steer/mast` Runtime, `k8s-lookout` MCP Diagnostics, & Chaos Scenario Injector
+# Verification Guide: Mast Harness, k8s-lookout MCP Resources, Instant Sandbox Clear & Multi-Panel Pinning
 
-This document describes the architecture, operational modes, and end-to-end verification procedures for Phase 7 (`feat/mast-lookout-chaos`).
+## 1. Automated Verification Suite
+Run the local CI aggregator to execute all unit tests, linters, and vulnerability scans:
+```bash
+./dev/tools/ci
+```
+- **Frontend (`vitest`):** `48/48` tests passing across `5` test suites (`web/src/main.test.js`, `web/src/sandbox/runtime.test.js`, `web/src/canvas/topology.test.js`, `web/src/canvas/controls.test.js`, `web/src/ws/client.test.js`).
+- **Backend (`go test -race`):** All Go unit tests passing (`pkg/orchestrator`, `pkg/mcp`, `pkg/gke`, `pkg/telemetry`).
 
----
+## 2. Automated E2E Verification
+With the server running on `:8080`, execute the automated E2E verifier:
+```bash
+go run ./cmd/verify -url http://localhost:8080
+```
 
-## 1. Architecture & Packaging: Built-In vs. External Process
-
-Both **`go-steer/mast`** and **`go-steer/k8s-lookout`** are embedded directly into the single `ephemeris` Go binary for zero-dependency local execution, while supporting optional external MCP processes in production:
-
-| Component | Operational Mode | Implementation Details |
-| :--- | :--- | :--- |
-| **`go-steer/mast` Agent Runtime Harness** (`pkg/orchestrator/mast_harness.go`) | **100% Built-In (In-Process)** | Runs directly inside the `ephemeris` Go orchestrator daemon (`pkg/orchestrator/server.go`). Coordinates the `ephemeris-spatial-ops` `WorkloadBundle`, executes the 3 specialists (`intent-router` -> `lookout-diagnostics` -> `arrowjs-compiler`), enforces turn budgets (`MaxTurns`), and records structured session transcripts (`MastTranscriptEntry`). |
-| **`go-steer/k8s-lookout` MCP Diagnostics** (`pkg/mcp/lookout.go`) | **Dual-Mode: Built-In Engine (Default) + External MCP Support** | **1. Built-In Engine (Zero-Dependency Default):** Embeds `k8s-lookout`'s diagnostic check rules (`lookout_triage`, `lookout_events`, `lookout_top`, `lookout_resources`), secret sanitizer (`SanitizeFinding` scrubbing `secret/`, `token`, `Bearer`, `password` per `k8s-lookout` §6.5), deterministic SHA-256 fingerprint generator (`lk8s-...`), and v1 summary envelope (`scanned=N findings=N elapsed=Dms`) directly inside `pkg/mcp/lookout.go`.<br>**2. External `lookout mcp` Process (Optional):** When `-lookout-mcp-endpoint` (env: `LOOKOUT_MCP_ENDPOINT`) is provided, `LookoutClient` dispatches JSON-RPC `tools/call` requests to an external `lookout mcp` server first, falling back to the built-in engine if offline. |
+## 3. Interactive Verification Walkthrough (`http://localhost:8080`)
+1. **Dynamic Per-Kind Filtering (`lookout_resources` MCP Tool):**
+   - Run `"show me the statefulsets"` $\rightarrow$ Renders exclusively `StatefulSet/redis-cart` with filter pill `StatefulSet` active and MCP badge `MCP tool=lookout_resources(kinds=[StatefulSet])`.
+   - Run `"show me the deployments"` $\rightarrow$ Renders exclusively `Deployment` controllers (`deploy-frontend`, `deploy-cart-service`, `deploy-checkout-service`, `deploy-payment-service`).
+   - Run `"show gateways and routes"` $\rightarrow$ Renders exclusively `Gateway + HTTPRoute` (`boutique-gateway`, `checkout-route`).
+2. **Instant `t = 0ms` Sandbox Clear & Live Stepper:**
+   - Submit any new prompt while a panel is open $\rightarrow$ Verify that the previous ArrowJS component is **cleared immediately at `t = 0ms`** and replaced by the **Gemini 3.8 Flash Live Synthesis & MCP Execution** stepper with a real-time `TTI` counter (`0.1s...`, `0.2s...`).
+3. **Multi-Panel Pinning (`📌 Pin Panel`):**
+   - Click the **📌** button in the top-right header of any floating panel to pin it (border and icon glow cyan).
+   - Submit another prompt or click another 3D node $\rightarrow$ Verify that a **second draggable floating panel window** spawns offset by `(+28px, +28px)`, allowing side-by-side comparison over the 3D spatial mesh.
