@@ -123,7 +123,11 @@ func (h *MastHarness) RunLookoutSpecialist(ctx context.Context, intent LLMIntent
 		onStatus(fmt.Sprintf("🔍 [mast:lookout-diagnostics] Invoking MCP tool %s...", toolName))
 	}
 
-	findings, envelope, err := h.lookoutClient.RunLookoutCheck(ctx, toolName, topology, telemetry, intent.TargetPod)
+	targetFilter := intent.TargetPod
+	if intent.TargetCluster != "" {
+		targetFilter = intent.TargetCluster
+	}
+	findings, envelope, err := h.lookoutClient.RunLookoutCheck(ctx, toolName, topology, telemetry, targetFilter)
 	if err != nil {
 		envelope = "scanned=12 findings=0 elapsed=5ms"
 	}

@@ -34,7 +34,21 @@ const (
 	ArchetypeResourceLeaderboard UIArchetype = "resource_leaderboard"
 	ArchetypeDeepTriageCockpit   UIArchetype = "deep_triage"
 	ArchetypeChaosScenario       UIArchetype = "chaos_scenario"
+	ArchetypeDynamicCustom       UIArchetype = "dynamic_custom"
 )
+
+func extractClusterFromPrompt(p string) string {
+	pLower := strings.ToLower(p)
+	switch {
+	case strings.Contains(pLower, "analytics") || strings.Contains(pLower, "europe-west"):
+		return "analytics-europe-west1"
+	case strings.Contains(pLower, "staging") || strings.Contains(pLower, "us-east"):
+		return "staging-us-east4"
+	case strings.Contains(pLower, "production-us-central1") || strings.Contains(pLower, "us-central"):
+		return "production-us-central1"
+	}
+	return ""
+}
 
 // classifyPromptArchetype inspects the user prompt and target resource URI to select the UI archetype.
 func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArchetype, string) {
@@ -58,6 +72,11 @@ func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArc
 		return ArchetypeChaosScenario, "default"
 	}
 
+	// 0b. K8s Controllers, Gateways, HTTPRoutes, CRDs, or Custom Analytical queries -> Tier 2 Dynamic UI
+	if strings.Contains(p, "gateway") || strings.Contains(p, "httproute") || strings.Contains(p, "crd") || strings.Contains(p, "custom resource") || strings.Contains(p, "sparkapplication") || strings.Contains(p, "raycluster") || strings.Contains(p, "deployment") || strings.Contains(p, "statefulset") {
+		return ArchetypeDynamicCustom, extractClusterFromPrompt(p)
+	}
+
 	// 1. Explicit Log Console requests ("show me the logs for XXX", "tail logs", "error logs")
 	if strings.Contains(p, "log") || strings.Contains(p, "tail") || strings.Contains(p, "stdout") || strings.Contains(p, "stderr") {
 		return ArchetypeLogsConsole, ""
@@ -68,9 +87,9 @@ func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArc
 		return ArchetypeResourceLeaderboard, ""
 	}
 
-	// 3. Multi-Cluster Incident Fleet Matrix ("which pods have issues", "show me the list of pods with issues", "what is failing")
+	// 3. Multi-Cluster or Cluster-Scoped Incident Matrix ("which pods have issues", "show me the issues with analytics-europe-west1")
 	if isFleetIssuesIntent(p, uri) {
-		return ArchetypeIssuesFleetMatrix, ""
+		return ArchetypeIssuesFleetMatrix, extractClusterFromPrompt(p)
 	}
 
 	// 4. Namespace Workload Inventory ("show me all the pods in the default namespace", "pods in payments")
@@ -87,7 +106,7 @@ func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArc
 }
 
 func isFleetIssuesIntent(p string, uri string) bool {
-	if uri == "gke://fleet/issues" {
+	if uri == "gke://fleet/issues" || strings.HasPrefix(uri, "gke://cluster/") {
 		return true
 	}
 	specificWorkloads := []string{"payment", "batch", "frontend", "cart", "checkout", "redis"}
@@ -124,14 +143,16 @@ func isFleetIssuesIntent(p string, uri string) bool {
 		"in error",
 		"anomalies",
 		"down right now",
+		"issues with",
+		"issues in",
 	}
 	for _, phrase := range phrases {
 		if strings.Contains(p, phrase) {
 			return true
 		}
 	}
-	if (strings.Contains(p, "pod") || strings.Contains(p, "service") || strings.Contains(p, "workload")) &&
-		(strings.Contains(p, "issue") || strings.Contains(p, "error") || strings.Contains(p, "fail") || strings.Contains(p, "crash") || strings.Contains(p, "problem") || strings.Contains(p, "down")) {
+	if (strings.Contains(p, "pod") || strings.Contains(p, "service") || strings.Contains(p, "workload") || strings.Contains(p, "cluster") || strings.Contains(p, "analytics") || strings.Contains(p, "staging") || strings.Contains(p, "production")) &&
+		(strings.Contains(p, "issue") || strings.Contains(p, "error") || strings.Contains(p, "fail") || strings.Contains(p, "crash") || strings.Contains(p, "problem") || strings.Contains(p, "down") || strings.Contains(p, "anomal")) {
 		return true
 	}
 	return false
@@ -280,15 +301,20 @@ type uiIssuePod struct {
 	Impact    string `json:"impact"`
 }
 
-// synthesizeIssuesListUI generates a reactive ArrowJS Multi-Cluster Incident Fleet Matrix bound to live topology and k8s-lookout findings.
-func synthesizeIssuesListUI(topology *api.TopologyData, findings []api.LookoutFinding, envelope string) string {
+// synthesizeIssuesListUI generates a reactive ArrowJS Multi-Cluster or Cluster-Scoped Incident Matrix bound to live topology and k8s-lookout findings.
+func synthesizeIssuesListUI(topology *api.TopologyData, findings []api.LookoutFinding, envelope string, targetCluster string) string {
 	issues := make([]uiIssuePod, 0)
 	if findings == nil {
 		findings = make([]api.LookoutFinding, 0)
 	}
 
+	targetClusterLower := strings.ToLower(strings.TrimSpace(targetCluster))
+
 	if topology != nil {
 		for _, cluster := range topology.Clusters {
+			if targetClusterLower != "" && !strings.Contains(strings.ToLower(cluster.Name), targetClusterLower) && !strings.Contains(targetClusterLower, strings.ToLower(cluster.Name)) {
+				continue
+			}
 			for _, ns := range cluster.Namespaces {
 				for _, pod := range ns.Pods {
 					if pod.Status != api.StatusRunning {
@@ -328,11 +354,23 @@ func synthesizeIssuesListUI(topology *api.TopologyData, findings []api.LookoutFi
 		envelope = fmt.Sprintf("scanned=12 findings=%d elapsed=9ms", len(findings))
 	}
 
+	headerTitle := "Multi-Cluster Incident Fleet Matrix"
+	healthyTitle := "ALL CLUSTERS HEALTHY — 0 ACTIVE INCIDENTS"
+	healthyDesc := "All Kubernetes workloads across production, staging, and analytics clusters are Running nominally."
+	if targetCluster != "" {
+		headerTitle = fmt.Sprintf("Cluster Incident Matrix: %s", targetCluster)
+		healthyTitle = fmt.Sprintf("CLUSTER HEALTHY (%s) — 0 ACTIVE INCIDENTS", targetCluster)
+		healthyDesc = fmt.Sprintf("All Kubernetes workloads and CRDs in cluster %s are Running nominally.", targetCluster)
+	}
+
 	issuesJSON, _ := json.Marshal(issues)
 	findingsJSON, _ := json.Marshal(findings)
 
 	return fmt.Sprintf(`const state = reactive({
   selectedFilter: 'ALL',
+  headerTitle: %q,
+  healthyTitle: %q,
+  healthyDesc: %q,
   lookoutEnvelope: %q,
   lookoutFindings: %s || [],
   issues: %s || []
@@ -384,8 +422,8 @@ const template = html`+"`"+`
   <div style="display: flex; flex-direction: column; gap: 14px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
     <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.35);">
       <div style="display: flex; align-items: center; gap: 10px;">
-        <span style="background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.45); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">Multi-Cluster Incident Fleet Matrix</span>
-        <span style="font-size: 12px; color: #cbd5e1;">${() => (state.issues || []).length} Active Anomalies Across Clusters</span>
+        <span style="background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.45); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">${() => state.headerTitle}</span>
+        <span style="font-size: 12px; color: #cbd5e1;">${() => (state.issues || []).length} Active Anomalies</span>
       </div>
       <span style="font-size: 11px; color: #38bdf8; font-family: 'JetBrains Mono', monospace;">lookout: ${() => state.lookoutEnvelope}</span>
     </div>
@@ -412,8 +450,8 @@ const template = html`+"`"+`
     ${() => (state.issues || []).length === 0 ? html`+"`"+`
       <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px;">
         <div style="font-size: 24px;">✨</div>
-        <div style="font-size: 15px; font-weight: 700; color: #34d399;">ALL CLUSTERS HEALTHY — 0 ACTIVE INCIDENTS</div>
-        <div style="font-size: 12px; color: #cbd5e1; max-width: 420px;">All Kubernetes workloads across production, staging, and analytics clusters are Running nominally.</div>
+        <div style="font-size: 15px; font-weight: 700; color: #34d399;">${() => state.healthyTitle}</div>
+        <div style="font-size: 12px; color: #cbd5e1; max-width: 420px;">${() => state.healthyDesc}</div>
         <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px;">
           <button @click="${() => triggerScenario('redis-oom')}" style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
             🔥 Inject Redis OOM Cascade
@@ -470,7 +508,78 @@ const template = html`+"`"+`
 `+"`"+`;
 
 template(container);
-`, envelope, string(findingsJSON), string(issuesJSON))
+`, headerTitle, healthyTitle, healthyDesc, envelope, string(findingsJSON), string(issuesJSON))
+}
+
+// synthesizeK8sResourcesUI generates a reactive ArrowJS K8s Controller & CRD Object Explorer bound to live topology.
+func synthesizeK8sResourcesUI(topology *api.TopologyData, targetCluster string) string {
+	resources := make([]api.K8sResource, 0)
+	targetLower := strings.ToLower(strings.TrimSpace(targetCluster))
+
+	if topology != nil {
+		for _, cluster := range topology.Clusters {
+			if targetLower != "" && !strings.Contains(strings.ToLower(cluster.Name), targetLower) && !strings.Contains(targetLower, strings.ToLower(cluster.Name)) {
+				continue
+			}
+			for _, ns := range cluster.Namespaces {
+				resources = append(resources, ns.Resources...)
+			}
+		}
+	}
+
+	resJSON, _ := json.Marshal(resources)
+	title := "Kubernetes Controllers & CRD Explorer"
+	if targetCluster != "" {
+		title = fmt.Sprintf("K8s & CRD Objects: %s", targetCluster)
+	}
+
+	return fmt.Sprintf(`const state = reactive({
+  filterKind: 'ALL',
+  title: %q,
+  resources: %s || []
+});
+
+function getFiltered() {
+  if (state.filterKind === 'ALL') return state.resources || [];
+  if (state.filterKind === 'CRD') return (state.resources || []).filter(r => r.is_crd);
+  return (state.resources || []).filter(r => r.kind.toLowerCase() === state.filterKind.toLowerCase());
+}
+
+const template = html`+"`"+`
+  <div style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
+    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.35);">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="background: rgba(168, 85, 247, 0.18); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">${() => state.title}</span>
+        <span style="font-size: 12px; color: #cbd5e1;">${() => getFiltered().length} Objects</span>
+      </div>
+      <div style="display: flex; gap: 6px;">
+        <button @click="${() => { state.filterKind = 'ALL'; }}" style="background: rgba(30, 41, 59, 0.9); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer;">All</button>
+        <button @click="${() => { state.filterKind = 'Gateway'; }}" style="background: rgba(30, 41, 59, 0.9); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer;">Gateway</button>
+        <button @click="${() => { state.filterKind = 'Deployment'; }}" style="background: rgba(30, 41, 59, 0.9); color: #a7f3d0; border: 1px solid rgba(52, 211, 153, 0.3); border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer;">Deployments</button>
+        <button @click="${() => { state.filterKind = 'CRD'; }}" style="background: rgba(30, 41, 59, 0.9); color: #f0abfc; border: 1px solid rgba(217, 70, 239, 0.3); border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer;">CRDs</button>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      ${() => getFiltered().map(r => html`+"`"+`
+        <div style="background: rgba(15, 23, 42, 0.78); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="background: rgba(168, 85, 247, 0.16); color: #e879f9; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">${r.kind}</span>
+              <span style="font-size: 13px; font-weight: 700; color: #f8fafc; font-family: 'JetBrains Mono', monospace;">${r.name}</span>
+              <span style="font-size: 10px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">${r.api_version} • ns/${r.namespace}</span>
+            </div>
+            <span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 2px 7px; border-radius: 5px; font-size: 10px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">${r.status}${r.replicas ? ' (' + r.replicas + ')' : ''}</span>
+          </div>
+          <div style="font-size: 11.5px; color: #cbd5e1;">${r.summary}</div>
+        </div>
+      `+"`"+`)}
+    </div>
+  </div>
+`+"`"+`;
+
+template(container);
+`, title, string(resJSON))
 }
 
 type uiNamespacePod struct {

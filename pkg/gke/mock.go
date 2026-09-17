@@ -84,6 +84,15 @@ func (m *MockProvider) RemediatePod(_ context.Context, podIDOrName string, _ str
 					remediated = &copied
 				}
 			}
+			for rIdx := range m.topology.Clusters[cIdx].Namespaces[nIdx].Resources {
+				res := &m.topology.Clusters[cIdx].Namespaces[nIdx].Resources[rIdx]
+				if strings.Contains(strings.ToLower(res.Name), target) || strings.Contains(target, strings.ToLower(res.Name)) || (strings.Contains(target, "payment") && res.Name == "checkout-route") {
+					res.Status = "Healthy"
+					if res.Replicas == "0/1" {
+						res.Replicas = "1/1"
+					}
+				}
+			}
 		}
 	}
 
@@ -202,6 +211,13 @@ func (m *MockProvider) ApplyScenario(_ context.Context, scenarioID string) (*api
 						pod.MemoryUsage = "250Mi"
 					}
 				}
+				for rIdx := range topo.Clusters[cIdx].Namespaces[nIdx].Resources {
+					res := &topo.Clusters[cIdx].Namespaces[nIdx].Resources[rIdx]
+					res.Status = "Healthy"
+					if res.Replicas == "0/1" {
+						res.Replicas = "1/1"
+					}
+				}
 			}
 		}
 	}
@@ -300,6 +316,65 @@ func buildDefaultMockTopology() *api.TopologyData {
 								MemoryUsage:  "1.8Gi",
 								Dependencies: nil,
 								Labels:       map[string]string{"app": "payment-service", "tier": "critical-backend"},
+							},
+						},
+						Resources: []api.K8sResource{
+							{
+								ID:          "gw-boutique-gateway",
+								Kind:        "Gateway",
+								APIVersion:  "gateway.networking.k8s.io/v1",
+								Name:        "boutique-gateway",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Healthy",
+								Summary:     "External HTTPS Ingress Gateway (gke-l7-global-external-managed, 34.120.55.10)",
+								ConnectedTo: []string{"httproute-checkout"},
+							},
+							{
+								ID:          "httproute-checkout",
+								Kind:        "HTTPRoute",
+								APIVersion:  "gateway.networking.k8s.io/v1",
+								Name:        "checkout-route",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Degraded",
+								Summary:     "Routes /api/v1/checkout -> checkout-service:8080, /api/v1/pay -> payment-service:8080 (502 Bad Gateway)",
+								ConnectedTo: []string{"svc-checkout-service", "svc-payment-service"},
+							},
+							{
+								ID:          "svc-payment-service",
+								Kind:        "Service",
+								APIVersion:  "v1",
+								Name:        "payment-service",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Degraded",
+								Summary:     "ClusterIP 10.96.42.18:8080 -> selector app=payment-service (0/1 ready endpoints)",
+								ConnectedTo: []string{"deploy-payment-service"},
+							},
+							{
+								ID:          "deploy-payment-service",
+								Kind:        "Deployment",
+								APIVersion:  "apps/v1",
+								Name:        "payment-service",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "CrashLoopBackOff",
+								Replicas:    "0/1",
+								Summary:     "RollingUpdate (image: gcr.io/boutique/payment:v2.1.4) — replica crashing on SIGSEGV at server.go:142",
+								ConnectedTo: []string{"pod-payment-service-84f7b6"},
+							},
+							{
+								ID:          "sts-redis-cart",
+								Kind:        "StatefulSet",
+								APIVersion:  "apps/v1",
+								Name:        "redis-cart",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Healthy",
+								Replicas:    "1/1",
+								Summary:     "Persistent Redis cache (volumeClaimTemplates: redis-data-pvc 10Gi ssd-pd)",
+								ConnectedTo: []string{"pod-redis-cart-6d9a2"},
 							},
 						},
 					},
@@ -478,6 +553,45 @@ func buildDefaultMockTopology() *api.TopologyData {
 								MemoryUsage:  "0Mi",
 								Dependencies: nil,
 								Labels:       map[string]string{"app": "batch-ingestor", "role": "pipeline"},
+							},
+						},
+						Resources: []api.K8sResource{
+							{
+								ID:          "crd-spark-pi",
+								Kind:        "SparkApplication",
+								APIVersion:  "sparkoperator.k8s.io/v1beta2",
+								Name:        "spark-pi-analytics",
+								Namespace:   "spark-jobs",
+								Cluster:     "analytics-europe-west1",
+								Status:      "Healthy",
+								Replicas:    "3/3",
+								IsCRD:       true,
+								Summary:     "Distributed Spark SQL ETL job (driver: spark-master, executors: 2x spark-worker)",
+								ConnectedTo: []string{"pod-spark-master-01", "pod-spark-worker-01", "pod-spark-worker-02"},
+							},
+							{
+								ID:         "crd-ray-llm",
+								Kind:       "RayCluster",
+								APIVersion: "ray.io/v1",
+								Name:       "ray-llm-inference",
+								Namespace:  "spark-jobs",
+								Cluster:    "analytics-europe-west1",
+								Status:     "Healthy",
+								Replicas:   "4/4",
+								IsCRD:      true,
+								Summary:    "KubeRay GPU inference cluster (head + 3x L4 worker group)",
+							},
+							{
+								ID:          "deploy-batch-ingestor",
+								Kind:        "Deployment",
+								APIVersion:  "apps/v1",
+								Name:        "batch-ingestor",
+								Namespace:   "spark-jobs",
+								Cluster:     "analytics-europe-west1",
+								Status:      "Pending",
+								Replicas:    "0/1",
+								Summary:     "Pending CPU quota allocation on europe-west1 node pool (requested: 4000m)",
+								ConnectedTo: []string{"pod-batch-ingestor-03"},
 							},
 						},
 					},

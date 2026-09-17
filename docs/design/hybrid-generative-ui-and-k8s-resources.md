@@ -46,3 +46,17 @@ type K8sResource struct {
     ConnectedTo []string `json:"connected_to,omitempty"`
 }
 ```
+
+### Dynamic CRD Discovery Roadmap (Phase 8 Live MCP Integration)
+When connected to a live GKE cluster via `gke-mcp`, `MCPProvider` discovers CRDs dynamically by querying:
+1. `apiextensions.k8s.io/v1/customresourcedefinitions` to enumerate installed custom resource kinds and their categories (`all`, `ai`, `batch`, `mesh`).
+2. Active custom resource instances within namespaces, mapping their status conditions (`Ready`, `Healthy`, `Failed`) into `K8sResource.Status`.
+
+---
+
+## 4. Resilient WebSocket Outgoing Queue (`web/src/ws/client.js`)
+
+To prevent prompts or scenario switches from hanging on `STREAMING` if submitted while the WebSocket is reconnecting (e.g. during a backend restart):
+- `WebSocketClient` maintains an internal `pendingQueue = []`.
+- Calls to `_send(payload)` when `readyState !== WebSocket.OPEN` append `payload` to `pendingQueue` and trigger `connect()`.
+- Upon `onopen`, all queued messages are flushed in FIFO order.

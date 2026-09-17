@@ -90,10 +90,26 @@ type PodNode struct {
 	Labels       map[string]string `json:"labels"`
 }
 
-// NamespaceNode represents a namespace grouping pods in the 3D topology.
+// K8sResource represents a Kubernetes core controller object (Deployment, Service, Gateway, HTTPRoute, StatefulSet) or Custom Resource Definition (CRD).
+type K8sResource struct {
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`        // Deployment, Service, Gateway, HTTPRoute, StatefulSet, SparkApplication, RayCluster
+	APIVersion  string   `json:"api_version"` // e.g. apps/v1, gateway.networking.k8s.io/v1, sparkoperator.k8s.io/v1beta2
+	Name        string   `json:"name"`
+	Namespace   string   `json:"namespace"`
+	Cluster     string   `json:"cluster"`
+	Status      string   `json:"status"`             // Healthy, Progressing, Degraded, CrashLoopBackOff
+	Replicas    string   `json:"replicas,omitempty"` // e.g. "3/3", "0/1"
+	IsCRD       bool     `json:"is_crd,omitempty"`   // true if CustomResourceDefinition
+	Summary     string   `json:"summary"`
+	ConnectedTo []string `json:"connected_to,omitempty"`
+}
+
+// NamespaceNode represents a namespace grouping pods and K8s/CRD resources in the 3D topology.
 type NamespaceNode struct {
-	Name string    `json:"name"`
-	Pods []PodNode `json:"pods"`
+	Name      string        `json:"name"`
+	Pods      []PodNode     `json:"pods"`
+	Resources []K8sResource `json:"resources,omitempty"`
 }
 
 // ClusterNode represents a GKE cluster root node.
@@ -145,7 +161,9 @@ type UIComponentData struct {
 	ResourceURI     string         `json:"resource_uri"`
 	Prompt          string         `json:"prompt"`
 	Archetype       string         `json:"archetype,omitempty"`
+	TargetCluster   string         `json:"target_cluster,omitempty"`
 	TargetNamespace string         `json:"target_namespace,omitempty"`
+	TargetPod       string         `json:"target_pod,omitempty"`
 	Code            string         `json:"code"`
 	Telemetry       *TelemetryData `json:"telemetry"`
 }

@@ -490,6 +490,32 @@ export function initializeApp() {
     return hasIssue && hasQuery;
   };
 
+  const extractTargetCluster = (pLower) => {
+    if (pLower.includes('analytics') || pLower.includes('europe-west')) {
+      return 'analytics-europe-west1';
+    }
+    if (pLower.includes('staging') || pLower.includes('us-east')) {
+      return 'staging-us-east4';
+    }
+    if (pLower.includes('production-us-central1') || pLower.includes('us-central')) {
+      return 'production-us-central1';
+    }
+    return '';
+  };
+
+  const isK8sResourceQuery = (pLower) => {
+    return (
+      pLower.includes('gateway') ||
+      pLower.includes('httproute') ||
+      pLower.includes('crd') ||
+      pLower.includes('custom resource') ||
+      pLower.includes('sparkapplication') ||
+      pLower.includes('raycluster') ||
+      pLower.includes('deployment') ||
+      pLower.includes('statefulset')
+    );
+  };
+
   const isChaosScenarioQuery = (pLower) => {
     return (
       pLower.includes('simulate') ||
@@ -505,6 +531,7 @@ export function initializeApp() {
   // 5. Wire Prompt Submission -> Intelligent Target Resolution & WebSocket
   hud.onPromptSubmit = (promptText, pod, meta) => {
     const pLower = (promptText || '').toLowerCase();
+    const targetCluster = extractTargetCluster(pLower);
 
     // 5a-0. Check for Chaos Scenario Injection intent ("simulate a redis oom cascade", "make all clusters healthy")
     if (isChaosScenarioQuery(pLower)) {
@@ -521,16 +548,66 @@ export function initializeApp() {
       return;
     }
 
-    // 5a. Check for Fleet-wide Issues Matrix intent ("which pods have issues", "show me the list of pods with issues")
+    // 5a-1. Check for K8s Controllers & CRDs Explorer intent ("show gateways and httproutes", "what CRDs are in analytics-europe-west1?")
+    if (isK8sResourceQuery(pLower)) {
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      if (targetCluster) {
+        const select = document.getElementById('hud-cluster-select');
+        if (select) select.value = targetCluster;
+        hud.onClusterSelect(targetCluster, false);
+      } else {
+        controls.resetView();
+      }
+      promptStartTime = performance.now();
+      const targetLabel = targetCluster
+        ? `K8s & CRD Explorer: ${targetCluster}`
+        : 'K8s & CRD Explorer';
+      hud.setStatusMessage(`Synthesizing ${targetLabel} UI...`, true);
+      panel.showStreamingProgress(
+        'Synthesizing Kubernetes Controllers & CRD Explorer...',
+        targetLabel
+      );
+      const uri = targetCluster
+        ? `gke://cluster/${targetCluster}/resources`
+        : 'gke://fleet/resources';
+      ws.sendPrompt(targetCluster || 'fleet-resources', uri, promptText);
+      return;
+    }
+
+    // 5a. Check for Fleet-wide or Cluster-Scoped Issues Matrix intent ("which pods have issues", "show me the issues with analytics-europe-west1")
     if (isFleetIssuesQuery(pLower)) {
       hud.setSelectedPod(null);
       topologyMesh.clearSelectedPod();
-      topologyMesh.highlightPodsByFilter((p) => p.status !== 'Running');
-      controls.resetView();
+      if (targetCluster) {
+        const select = document.getElementById('hud-cluster-select');
+        if (select) select.value = targetCluster;
+        hud.onClusterSelect(targetCluster, false);
+        topologyMesh.highlightPodsByFilter(
+          (p, ud) => p.status !== 'Running' && ud && ud.clusterName === targetCluster
+        );
+      } else {
+        topologyMesh.highlightPodsByFilter((p) => p.status !== 'Running');
+        controls.resetView();
+      }
       promptStartTime = performance.now();
-      hud.setStatusMessage(`Scanning multi-cluster fleet for active issues...`, true);
-      panel.showStreamingProgress('Querying multi-cluster anomalies...', 'Fleet Incident Matrix');
-      ws.sendPrompt('fleet-issues', 'gke://fleet/issues', promptText);
+      const headerLabel = targetCluster
+        ? `Cluster Incident Matrix: ${targetCluster}`
+        : 'Fleet Incident Matrix';
+      hud.setStatusMessage(
+        targetCluster
+          ? `Scanning cluster ${targetCluster} for active issues...`
+          : `Scanning multi-cluster fleet for active issues...`,
+        true
+      );
+      panel.showStreamingProgress(
+        targetCluster
+          ? `Querying anomalies in ${targetCluster}...`
+          : 'Querying multi-cluster anomalies...',
+        headerLabel
+      );
+      const uri = targetCluster ? `gke://cluster/${targetCluster}/issues` : 'gke://fleet/issues';
+      ws.sendPrompt(targetCluster ? `cluster-${targetCluster}` : 'fleet-issues', uri, promptText);
       return;
     }
 
@@ -711,26 +788,56 @@ export function initializeApp() {
     const durationMs = promptStartTime ? performance.now() - promptStartTime : 0;
     const codeStr = msg.code || '';
     const archetype = msg.archetype || '';
+    const targetCluster = msg.target_cluster || '';
 
     let displayTitle = hud.selectedPod ? hud.selectedPod.name : msg.selected_node_id || 'Pod';
     let displayStatus = hud.selectedPod ? hud.selectedPod.status : 'Running';
 
-    if (
+    if (targetCluster) {
+      const select = document.getElementById('hud-cluster-select');
+      if (select && select.value !== targetCluster) {
+        select.value = targetCluster;
+        hud.onClusterSelect(targetCluster, false);
+      }
+    }
+
+    if (archetype === 'dynamic_custom' || codeStr.includes('Kubernetes Controllers & CRDs')) {
+      displayTitle = targetCluster
+        ? `K8s & CRD Explorer: ${targetCluster}`
+        : 'Kubernetes & CRD Explorer';
+      displayStatus = 'Running';
+      panel.activeObject = null;
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      if (!targetCluster) {
+        controls.resetView();
+      }
+    } else if (
       archetype === 'chaos_scenario' ||
       archetype === 'issues_matrix' ||
-      codeStr.includes('Multi-Cluster Incident Fleet Matrix')
+      codeStr.includes('Multi-Cluster Incident Fleet Matrix') ||
+      codeStr.includes('Cluster Incident Matrix')
     ) {
       displayTitle =
         archetype === 'chaos_scenario'
           ? 'Chaos Scenario & Fleet Health'
-          : 'Multi-Cluster Fleet Issues';
-      const hasIssues = !codeStr.includes('ALL CLUSTERS HEALTHY');
+          : targetCluster
+            ? `Cluster Issues: ${targetCluster}`
+            : 'Multi-Cluster Fleet Issues';
+      const hasIssues =
+        !codeStr.includes('ALL CLUSTERS HEALTHY') && !codeStr.includes('0 ACTIVE INCIDENTS');
       displayStatus = hasIssues ? 'CrashLoopBackOff' : 'Running';
       panel.activeObject = null;
       hud.setSelectedPod(null);
       topologyMesh.clearSelectedPod();
-      topologyMesh.highlightPodsByFilter((p) => p.status !== 'Running');
-      controls.resetView();
+      if (targetCluster) {
+        topologyMesh.highlightPodsByFilter(
+          (p, ud) => p.status !== 'Running' && ud && ud.clusterName === targetCluster
+        );
+      } else {
+        topologyMesh.highlightPodsByFilter((p) => p.status !== 'Running');
+        controls.resetView();
+      }
     } else if (
       archetype === 'namespace_inventory' ||
       codeStr.includes('Namespace Workload Inventory')

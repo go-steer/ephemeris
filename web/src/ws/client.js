@@ -28,6 +28,7 @@ export class WebSocketClient {
     this.reconnectAttempts = 0;
     this.maxReconnectDelayMs = 10000;
     this.reconnectTimer = null;
+    this.pendingQueue = [];
 
     // Callbacks
     this.onTopology = null;
@@ -63,6 +64,10 @@ export class WebSocketClient {
         this.reconnectAttempts = 0;
         this._notifyConnection('connected');
         this.sendInit();
+        while (this.pendingQueue.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
+          const queued = this.pendingQueue.shift();
+          this.ws.send(JSON.stringify(queued));
+        }
       };
 
       this.ws.onmessage = (event) => {
@@ -134,7 +139,16 @@ export class WebSocketClient {
 
   _send(payload) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('Cannot send message: WebSocket not open');
+      if (payload && payload.type !== 'init') {
+        this.pendingQueue.push(payload);
+      }
+      if (
+        !this.ws ||
+        this.ws.readyState === WebSocket.CLOSED ||
+        this.ws.readyState === WebSocket.CLOSING
+      ) {
+        this.connect();
+      }
       return false;
     }
     this.ws.send(JSON.stringify(payload));

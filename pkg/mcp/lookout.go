@@ -92,16 +92,29 @@ func (l *LookoutClient) RunLookoutCheck(ctx context.Context, toolName string, to
 	return findings, envelope, nil
 }
 
-func synthesizeFindingsFromState(topology *api.TopologyData, targetPod string) ([]api.LookoutFinding, int) {
+func synthesizeFindingsFromState(topology *api.TopologyData, targetFilter string) ([]api.LookoutFinding, int) {
 	findings := make([]api.LookoutFinding, 0)
 	scanned := 0
 
+	targetLower := strings.ToLower(strings.TrimSpace(targetFilter))
+	isClusterFilter := strings.Contains(targetLower, "europe-west") ||
+		strings.Contains(targetLower, "us-east") ||
+		strings.Contains(targetLower, "us-central") ||
+		targetLower == "analytics" ||
+		targetLower == "staging" ||
+		targetLower == "production-us-central1" ||
+		targetLower == "staging-us-east4" ||
+		targetLower == "analytics-europe-west1"
+
 	if topology != nil {
 		for _, cluster := range topology.Clusters {
+			if isClusterFilter && !strings.Contains(strings.ToLower(cluster.Name), targetLower) && !strings.Contains(targetLower, strings.ToLower(cluster.Name)) {
+				continue
+			}
 			for _, ns := range cluster.Namespaces {
 				for _, pod := range ns.Pods {
 					scanned++
-					if targetPod != "" && targetPod != "all" && !strings.Contains(targetPod, pod.Name) && !strings.Contains(pod.ID, targetPod) {
+					if !isClusterFilter && targetFilter != "" && targetFilter != "all" && !strings.Contains(targetFilter, pod.Name) && !strings.Contains(pod.ID, targetFilter) {
 						continue
 					}
 

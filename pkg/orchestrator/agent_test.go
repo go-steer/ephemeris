@@ -227,6 +227,18 @@ func TestAgent_PolymorphicArchetypes(t *testing.T) {
 			expectedType:     ArchetypeResourceLeaderboard,
 			expectedContains: "Workload Resource Saturation Leaderboard",
 		},
+		{
+			name:             "cluster_scoped_issues_analytics",
+			prompt:           "show me the issues with the analytics-europe-west1 cluster",
+			expectedType:     ArchetypeIssuesFleetMatrix,
+			expectedContains: "Cluster Incident Matrix: analytics-europe-west1",
+		},
+		{
+			name:             "k8s_crds_analytics",
+			prompt:           "what CRDs are running in analytics-europe-west1?",
+			expectedType:     ArchetypeDynamicCustom,
+			expectedContains: "K8s & CRD Objects: analytics-europe-west1",
+		},
 	}
 
 	for _, tc := range cases {

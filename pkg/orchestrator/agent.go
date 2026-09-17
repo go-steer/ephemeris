@@ -42,6 +42,7 @@ type LLMIntentResult struct {
 	Archetype       UIArchetype `json:"archetype"`
 	TargetPod       string      `json:"target_pod"`
 	TargetNamespace string      `json:"target_namespace"`
+	TargetCluster   string      `json:"target_cluster"`
 	TargetScenario  string      `json:"target_scenario"`
 	Reasoning       string      `json:"reasoning"`
 }
@@ -94,13 +95,20 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 // ResolveIntent uses Gemini on Vertex AI via MastHarness to translate any natural-language prompt into a structured UIArchetype and target resource.
 func (a *Agent) ResolveIntent(ctx context.Context, userPrompt string, telemetry *api.TelemetryData, onStatus func(string)) LLMIntentResult {
 	fallbackArch, fallbackNS := classifyPromptArchetype(userPrompt, telemetry)
+	targetCluster := extractClusterFromPrompt(userPrompt)
 	fallbackResult := LLMIntentResult{
 		Archetype:       fallbackArch,
 		TargetNamespace: fallbackNS,
+		TargetCluster:   targetCluster,
 		Reasoning:       "Deterministic rule-based intent classification",
 	}
 	if fallbackArch == ArchetypeChaosScenario {
 		fallbackResult.TargetScenario = fallbackNS
+	}
+	if fallbackArch == ArchetypeIssuesFleetMatrix || fallbackArch == ArchetypeDynamicCustom {
+		if fallbackNS != "" && targetCluster == "" {
+			fallbackResult.TargetCluster = fallbackNS
+		}
 	}
 
 	if a.genaiClient == nil || a.cfg.ForceMock {
@@ -114,16 +122,18 @@ func (a *Agent) ResolveIntent(ctx context.Context, userPrompt string, telemetry 
 	intentPrompt := fmt.Sprintf(`You are the Ephemeris Spatial Observability Intent Router for Google Kubernetes Engine (GKE).
 Translate the user's natural-language prompt into a JSON object matching this exact schema:
 {
-  "archetype": "logs_console" | "issues_matrix" | "namespace_inventory" | "resource_leaderboard" | "deep_triage" | "chaos_scenario",
+  "archetype": "logs_console" | "issues_matrix" | "namespace_inventory" | "resource_leaderboard" | "deep_triage" | "chaos_scenario" | "dynamic_custom",
   "target_pod": string (one of: "payment-service", "cart-service", "checkout-service", "batch-ingestor", "frontend", "redis-cart", or "" if fleet/namespace-wide),
   "target_namespace": string (one of: "default", "production", "staging", "spark-jobs", "checkout", "data-pipeline", "payments", "monitoring", or "all"),
+  "target_cluster": string (one of: "production-us-central1", "staging-us-east4", "analytics-europe-west1", or "" if all clusters),
   "target_scenario": string (one of: "redis-oom", "traffic-spike", "healthy", "default", or "" unless archetype is chaos_scenario),
   "reasoning": string (brief 1-sentence explanation of why this UI archetype and target were chosen)
 }
 
 Rules:
 - Choose "chaos_scenario" if the user asks to inject, simulate, or trigger a failure scenario (e.g. "inject redis oom cascade" -> target_scenario="redis-oom", "simulate black friday traffic spike" -> target_scenario="traffic-spike", "reset all clusters to healthy" -> target_scenario="healthy").
-- Choose "issues_matrix" if the user asks which pods have issues, what is failing/broken/crashing, show anomalies, or list alerts across clusters without naming a single specific pod.
+- Choose "dynamic_custom" if the user asks about Kubernetes controllers (Gateway, HTTPRoute, Service, Deployment, StatefulSet), Custom Resource Definitions (CRDs, SparkApplication, RayCluster), or asks a custom analytical question that requires exploring higher-level K8s resources.
+- Choose "issues_matrix" if the user asks which pods have issues, what is failing/broken/crashing, show anomalies, or asks for issues in a specific cluster (e.g. "show me the issues with the analytics-europe-west1 cluster" -> archetype="issues_matrix", target_cluster="analytics-europe-west1").
 - Choose "logs_console" if the user asks to see/tail/stream logs or stdout/stderr for a workload.
 - Choose "namespace_inventory" if the user asks to list or show all pods/workloads in a namespace (e.g. production, default, spark-jobs).
 - Choose "resource_leaderboard" if the user asks to compare CPU/memory usage, top resource consumers, or saturation rankings.
@@ -147,10 +157,13 @@ User Prompt: %q`, userPrompt)
 			var parsed LLMIntentResult
 			if err := json.Unmarshal([]byte(rawJSON.String()), &parsed); err == nil && parsed.Archetype != "" {
 				a.cfg.Model = modelName
+				if parsed.TargetCluster == "" && targetCluster != "" {
+					parsed.TargetCluster = targetCluster
+				}
 				if a.mastHarness != nil {
 					a.mastHarness.RecordIntentStep(parsed, 120)
 				}
-				log.Printf("Gemini Intent Router [%s]: prompt=%q -> archetype=%s, pod=%s, ns=%s, scenario=%s (%s)", modelName, userPrompt, parsed.Archetype, parsed.TargetPod, parsed.TargetNamespace, parsed.TargetScenario, parsed.Reasoning)
+				log.Printf("Gemini Intent Router [%s]: prompt=%q -> archetype=%s, pod=%s, ns=%s, cluster=%s, scenario=%s (%s)", modelName, userPrompt, parsed.Archetype, parsed.TargetPod, parsed.TargetNamespace, parsed.TargetCluster, parsed.TargetScenario, parsed.Reasoning)
 				if onStatus != nil && parsed.Reasoning != "" {
 					onStatus(fmt.Sprintf("🤖 [mast:intent-router] %s", parsed.Reasoning))
 				}
@@ -225,9 +238,18 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 	switch intent.Archetype {
 	case ArchetypeIssuesFleetMatrix:
 		if onStatus != nil {
-			onStatus("⚡ [mast:arrowjs-compiler] Synthesizing Multi-Cluster Incident Fleet Matrix (ArrowJS)...")
+			if intent.TargetCluster != "" {
+				onStatus(fmt.Sprintf("⚡ [mast:arrowjs-compiler] Synthesizing Cluster Incident Matrix for %q (ArrowJS)...", intent.TargetCluster))
+			} else {
+				onStatus("⚡ [mast:arrowjs-compiler] Synthesizing Multi-Cluster Incident Fleet Matrix (ArrowJS)...")
+			}
 		}
-		code = synthesizeIssuesListUI(topo, findings, envelope)
+		code = synthesizeIssuesListUI(topo, findings, envelope, intent.TargetCluster)
+	case ArchetypeDynamicCustom:
+		if onStatus != nil {
+			onStatus("🧠 [mast:arrowjs-compiler] Synthesizing Dynamic Kubernetes & CRD Explorer UI via Gemini 3.8-flash...")
+		}
+		code = a.SynthesizeDynamicArrowJS(ctx, userPrompt, intent, topo, telemetry, findings, envelope, onStatus)
 	case ArchetypeNamespaceInventory:
 		ns := intent.TargetNamespace
 		if ns == "" {
@@ -257,6 +279,61 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 	return injectGeminiReasoning(code, intent.Reasoning, a.cfg.Model, envelope), nil
 }
 
+// SynthesizeDynamicArrowJS asks Vertex AI Gemini 3.8-flash to synthesize bespoke ArrowJS UI code for custom K8s/CRD queries, falling back to synthesizeK8sResourcesUI.
+func (a *Agent) SynthesizeDynamicArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, _ *api.TelemetryData, findings []api.LookoutFinding, _ string, onStatus func(string)) string {
+	fallbackCode := synthesizeK8sResourcesUI(topo, intent.TargetCluster)
+	if a.genaiClient == nil || a.cfg.ForceMock {
+		return fallbackCode
+	}
+
+	topoJSON, _ := json.Marshal(topo)
+	findingsJSON, _ := json.Marshal(findings)
+
+	synthPrompt := fmt.Sprintf(`You are an expert SRE Frontend Engineer writing reactive UI components using @arrow-js/core.
+Write a self-contained ArrowJS component that answers the user's Kubernetes/GKE query: %q
+Target Cluster filter: %q
+
+You have access in scope to:
+- reactive, html (from @arrow-js/core)
+- container (DOM element to mount into via template(container))
+- CustomEvent dispatch on container:
+  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', { detail: { podId: name }, bubbles: true, composed: true }))
+
+Live Cluster Topology & Resources JSON:
+%s
+
+k8s-lookout Findings JSON:
+%s
+
+Requirements:
+1. Return ONLY valid JavaScript code (no markdown code fences).
+2. Define const state = reactive({ ... }); and const template = html`+"`...`"+`; and end with template(container);
+3. Use dark glassmorphic styling (font-family: 'Inter', system-ui, sans-serif; color: #f8fafc; background: rgba(15, 23, 42, 0.85)).`,
+		userPrompt, intent.TargetCluster, string(topoJSON), string(findingsJSON))
+
+	resp, err := a.genaiClient.Models.GenerateContent(ctx, a.cfg.Model, genai.Text(synthPrompt), nil)
+	if err == nil && len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+		var rawCode strings.Builder
+		for _, part := range resp.Candidates[0].Content.Parts {
+			rawCode.WriteString(part.Text)
+		}
+		cleaned := strings.TrimSpace(rawCode.String())
+		cleaned = strings.TrimPrefix(cleaned, "```javascript")
+		cleaned = strings.TrimPrefix(cleaned, "```js")
+		cleaned = strings.TrimPrefix(cleaned, "```")
+		cleaned = strings.TrimSuffix(cleaned, "```")
+		cleaned = strings.TrimSpace(cleaned)
+		if strings.Contains(cleaned, "reactive(") && strings.Contains(cleaned, "html`") && strings.Contains(cleaned, "template(container)") {
+			if onStatus != nil {
+				onStatus("✨ [mast:arrowjs-compiler] Synthesized bespoke ArrowJS UI via Gemini 3.8-flash")
+			}
+			return cleaned
+		}
+	}
+
+	return fallbackCode
+}
+
 func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryData, onStatus func(string)) string {
 	archetype, targetNS := classifyPromptArchetype(prompt, telemetry)
 	podID := "workload"
@@ -270,6 +347,8 @@ func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryDa
 			onStatus(fmt.Sprintf("Executing MCP tool: lookout_logs(resource='%s', limit=50)...", podID))
 		case ArchetypeIssuesFleetMatrix:
 			onStatus("Executing MCP tool: lookout_findings(status=['CrashLoopBackOff', 'Pending'])...")
+		case ArchetypeDynamicCustom:
+			onStatus("Executing MCP tool: lookout_resources(kind=['Gateway', 'HTTPRoute', 'Deployment', 'CRD'])...")
 		case ArchetypeNamespaceInventory:
 			if targetNS == "" {
 				targetNS = "production"
@@ -312,7 +391,9 @@ func (a *Agent) generateFallback(prompt string, telemetry *api.TelemetryData) st
 	case ArchetypeLogsConsole:
 		return synthesizeLogsConsoleUI(telemetry)
 	case ArchetypeIssuesFleetMatrix:
-		return synthesizeIssuesListUI(topo, findings, envelope)
+		return synthesizeIssuesListUI(topo, findings, envelope, targetNS)
+	case ArchetypeDynamicCustom:
+		return synthesizeK8sResourcesUI(topo, targetNS)
 	case ArchetypeNamespaceInventory:
 		return synthesizeNamespaceListUI(targetNS, topo)
 	case ArchetypeResourceLeaderboard:

@@ -309,7 +309,17 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		// Adjust resourceURI based on LLM-resolved intent
 		switch intent.Archetype {
 		case ArchetypeIssuesFleetMatrix:
-			resourceURI = "gke://fleet/issues"
+			if intent.TargetCluster != "" {
+				resourceURI = "gke://cluster/" + intent.TargetCluster + "/issues"
+			} else {
+				resourceURI = "gke://fleet/issues"
+			}
+		case ArchetypeDynamicCustom:
+			if intent.TargetCluster != "" {
+				resourceURI = "gke://cluster/" + intent.TargetCluster + "/resources"
+			} else {
+				resourceURI = "gke://fleet/resources"
+			}
 		case ArchetypeNamespaceInventory:
 			ns := intent.TargetNamespace
 			if ns == "" {
@@ -350,6 +360,8 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 				Prompt:          msg.Prompt,
 				Archetype:       string(intent.Archetype),
 				TargetNamespace: intent.TargetNamespace,
+				TargetCluster:   intent.TargetCluster,
+				TargetPod:       intent.TargetPod,
 				Code:            code,
 				Telemetry:       telem,
 			},
