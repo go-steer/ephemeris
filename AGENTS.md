@@ -30,6 +30,7 @@ dev/
   ci/presubmits/      Thin one-line delegators executed by GitHub Actions.
 docs/
   design/             Architectural specifications and design documents.
+  verification/       End-to-end verification guides and walkthroughs.
   site/               Astro Starlight documentation site.
 .github/
   workflows/          ci.yml, docs.yml, ci-docs.yml.
@@ -65,6 +66,9 @@ docs/
 
 6. **Small, self-contained commits with Conventional Commits:**
    Subject lines use `feat:`, `fix:`, `docs:`, `ci:`, `chore:`, `test:`. Rebase feature branches on `main`; do not merge commits.
+
+7. **Persist all architectural plans and verification walkthroughs in repo docs:**
+   Always write architectural design documents and implementation plans to `docs/design/` and all verification guides and walkthroughs to `docs/verification/` so design and verification artifacts are version-controlled alongside the code.
 
 ## Build & Test Commands
 
