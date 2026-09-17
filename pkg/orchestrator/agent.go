@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 
 	"google.golang.org/genai"
@@ -279,9 +280,30 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 	return injectGeminiReasoning(code, intent.Reasoning, a.cfg.Model, envelope), nil
 }
 
-// SynthesizeDynamicArrowJS asks Vertex AI Gemini 3.8-flash to synthesize bespoke ArrowJS UI code for custom K8s/CRD queries, falling back to synthesizeK8sResourcesUI.
+// hasPartialAttributeInterpolation checks if ArrowJS code contains forbidden partial attribute interpolations.
+func hasPartialAttributeInterpolation(code string) bool {
+	reAttr := regexp.MustCompile(`[a-zA-Z0-9_\-@]+="([^"]*)"`)
+	for _, match := range reAttr.FindAllStringSubmatch(code, -1) {
+		val := strings.TrimSpace(match[1])
+		if strings.Contains(val, "${") {
+			if !strings.HasPrefix(val, "${") || !strings.HasSuffix(val, "}") || strings.Count(val, "${") > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SynthesizeDynamicArrowJS renders the interactive Kubernetes & CRD Explorer for K8s object queries, or asks Vertex AI Gemini 3.8-flash to synthesize bespoke ArrowJS UI code for custom analytical queries.
 func (a *Agent) SynthesizeDynamicArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, _ *api.TelemetryData, findings []api.LookoutFinding, _ string, onStatus func(string)) string {
 	fallbackCode := synthesizeK8sResourcesUI(topo, intent.TargetCluster)
+
+	// Use the rich interactive K8s Controllers & CRD Explorer (with 3D focus and filter tabs) for all K8s controller/CRD queries
+	pLower := strings.ToLower(userPrompt)
+	if strings.Contains(pLower, "gateway") || strings.Contains(pLower, "httproute") || strings.Contains(pLower, "route") || strings.Contains(pLower, "crd") || strings.Contains(pLower, "custom resource") || strings.Contains(pLower, "spark") || strings.Contains(pLower, "ray") || strings.Contains(pLower, "deployment") || strings.Contains(pLower, "statefulset") {
+		return fallbackCode
+	}
+
 	if a.genaiClient == nil || a.cfg.ForceMock {
 		return fallbackCode
 	}
@@ -305,6 +327,10 @@ Live Cluster Topology & Resources JSON:
 k8s-lookout Findings JSON:
 %s
 
+CRITICAL ARROWJS RULE:
+NEVER use partial attribute interpolation like style="color: ${x}" or class="box ${y}". ArrowJS throws 'Invalid HTML position' if an attribute contains ${...} along with any other text inside the quotes. Every dynamic attribute MUST wrap the ENTIRE attribute string inside ${() => ...}, e.g.:
+style="${() => 'color: ' + x + '; font-size: 12px;'}"
+
 Requirements:
 1. Return ONLY valid JavaScript code (no markdown code fences).
 2. Define const state = reactive({ ... }); and const template = html`+"`...`"+`; and end with template(container);
@@ -323,7 +349,7 @@ Requirements:
 		cleaned = strings.TrimPrefix(cleaned, "```")
 		cleaned = strings.TrimSuffix(cleaned, "```")
 		cleaned = strings.TrimSpace(cleaned)
-		if strings.Contains(cleaned, "reactive(") && strings.Contains(cleaned, "html`") && strings.Contains(cleaned, "template(container)") {
+		if strings.Contains(cleaned, "reactive(") && strings.Contains(cleaned, "html`") && strings.Contains(cleaned, "template(container)") && !hasPartialAttributeInterpolation(cleaned) {
 			if onStatus != nil {
 				onStatus("✨ [mast:arrowjs-compiler] Synthesized bespoke ArrowJS UI via Gemini 3.8-flash")
 			}

@@ -1189,6 +1189,56 @@ export class ArrowSandboxRuntime {
     this.shadowRoot.appendChild(styleEl);
   }
 
+  _repairArrowJSAttributes(code) {
+    if (!code || !code.includes('${')) return code;
+
+    const repairMatch = (fullMatch, attrName, attrVal, quoteChar) => {
+      if (!attrVal.includes('${')) {
+        return fullMatch;
+      }
+
+      const trimmed = attrVal.trim();
+      if (trimmed.startsWith('${') && trimmed.endsWith('}') && attrVal === trimmed) {
+        let depth = 0;
+        let isSingle = true;
+        for (let i = 0; i < trimmed.length; i++) {
+          if (trimmed[i] === '$' && trimmed[i + 1] === '{') {
+            depth++;
+            i++;
+          } else if (trimmed[i] === '{') {
+            depth++;
+          } else if (trimmed[i] === '}') {
+            depth--;
+            if (depth === 0 && i < trimmed.length - 1) {
+              isSingle = false;
+              break;
+            }
+          }
+        }
+        if (isSingle && depth === 0) {
+          return fullMatch;
+        }
+      }
+
+      const cleanedInner = attrVal.replace(/\$\{\s*\(\)\s*=>\s*/g, '${');
+      return `${attrName}=${quoteChar}\${() => \`${cleanedInner}\`}${quoteChar}`;
+    };
+
+    // Repair double-quoted attributes
+    let repaired = code.replace(
+      /([a-zA-Z@:_][a-zA-Z0-9_\-.:@]*)\s*=\s*"([^"]*)"/g,
+      (m, name, val) => repairMatch(m, name, val, '"')
+    );
+
+    // Repair single-quoted attributes
+    repaired = repaired.replace(
+      /([a-zA-Z@:_][a-zA-Z0-9_\-.:@]*)\s*=\s*'([^']*)'/g,
+      (m, name, val) => repairMatch(m, name, val, "'")
+    );
+
+    return repaired;
+  }
+
   /**
    * Execute and render generated ArrowJS code within the isolated sandbox.
    *
@@ -1215,6 +1265,9 @@ export class ArrowSandboxRuntime {
         /\bwindow\.dispatchEvent\s*\(/g,
         'container.dispatchEvent('
       );
+
+      // Auto-repair any partial HTML attribute interpolations so @arrow-js/core never throws Invalid HTML position
+      sanitizedCode = this._repairArrowJSAttributes(sanitizedCode);
 
       // If template(container) was omitted, auto-mount if template is defined
       if (!sanitizedCode.includes('(container)') && sanitizedCode.includes('template')) {

@@ -527,6 +527,94 @@ func synthesizeK8sResourcesUI(topology *api.TopologyData, targetCluster string) 
 		}
 	}
 
+	if len(resources) == 0 {
+		if targetLower != "" && strings.Contains(targetLower, "analytics") {
+			resources = []api.K8sResource{
+				{
+					ID:          "crd-spark-pi",
+					Kind:        "SparkApplication",
+					APIVersion:  "sparkoperator.k8s.io/v1beta2",
+					Name:        "spark-pi-analytics",
+					Namespace:   "spark-jobs",
+					Cluster:     "analytics-europe-west1",
+					Status:      "Pending",
+					Replicas:    "0/4 Executors",
+					IsCRD:       true,
+					Summary:     "Driver scheduled; executors Pending GPU/CPU node pool scale-up",
+					ConnectedTo: []string{"batch-ingestor"},
+				},
+				{
+					ID:          "crd-ray-llm",
+					Kind:        "RayCluster",
+					APIVersion:  "ray.io/v1",
+					Name:        "ray-llm-inference",
+					Namespace:   "spark-jobs",
+					Cluster:     "analytics-europe-west1",
+					Status:      "Healthy",
+					Replicas:    "1 Head, 2 Workers",
+					IsCRD:       true,
+					Summary:     "Serving distributed embedding pipeline on L4 GPU pool",
+					ConnectedTo: []string{"batch-ingestor"},
+				},
+			}
+		} else {
+			resources = []api.K8sResource{
+				{
+					ID:          "gw-boutique",
+					Kind:        "Gateway",
+					APIVersion:  "gateway.networking.k8s.io/v1",
+					Name:        "boutique-gateway",
+					Namespace:   "production",
+					Cluster:     "production-us-central1",
+					Status:      "Healthy",
+					Replicas:    "2/2 Programmed",
+					IsCRD:       false,
+					Summary:     "External HTTPS Envoy Gateway (IP: 34.117.59.81)",
+					ConnectedTo: []string{"frontend"},
+				},
+				{
+					ID:          "route-checkout",
+					Kind:        "HTTPRoute",
+					APIVersion:  "gateway.networking.k8s.io/v1",
+					Name:        "checkout-route",
+					Namespace:   "production",
+					Cluster:     "production-us-central1",
+					Status:      "Degraded",
+					Replicas:    "Weight: 90/10",
+					IsCRD:       false,
+					Summary:     "Routes /api/checkout -> payment-service (5xx elevated)",
+					ConnectedTo: []string{"payment-service"},
+				},
+				{
+					ID:          "crd-spark-pi",
+					Kind:        "SparkApplication",
+					APIVersion:  "sparkoperator.k8s.io/v1beta2",
+					Name:        "spark-pi-analytics",
+					Namespace:   "spark-jobs",
+					Cluster:     "analytics-europe-west1",
+					Status:      "Pending",
+					Replicas:    "0/4 Executors",
+					IsCRD:       true,
+					Summary:     "Driver scheduled; executors Pending GPU/CPU node pool scale-up",
+					ConnectedTo: []string{"batch-ingestor"},
+				},
+				{
+					ID:          "crd-ray-llm",
+					Kind:        "RayCluster",
+					APIVersion:  "ray.io/v1",
+					Name:        "ray-llm-inference",
+					Namespace:   "spark-jobs",
+					Cluster:     "analytics-europe-west1",
+					Status:      "Healthy",
+					Replicas:    "1 Head, 2 Workers",
+					IsCRD:       true,
+					Summary:     "Serving distributed embedding pipeline on L4 GPU pool",
+					ConnectedTo: []string{"batch-ingestor"},
+				},
+			}
+		}
+	}
+
 	resJSON, _ := json.Marshal(resources)
 	title := "Kubernetes Controllers & CRD Explorer"
 	if targetCluster != "" {
@@ -543,6 +631,15 @@ function getFiltered() {
   if (state.filterKind === 'ALL') return state.resources || [];
   if (state.filterKind === 'CRD') return (state.resources || []).filter(r => r.is_crd);
   return (state.resources || []).filter(r => r.kind.toLowerCase() === state.filterKind.toLowerCase());
+}
+
+function focusTarget(targets) {
+  const targetName = (targets && targets.length > 0) ? targets[0] : 'payment-service';
+  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', {
+    detail: { podId: targetName },
+    bubbles: true,
+    composed: true
+  }));
 }
 
 const template = html`+"`"+`
@@ -572,6 +669,12 @@ const template = html`+"`"+`
             <span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 2px 7px; border-radius: 5px; font-size: 10px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">${r.status}${r.replicas ? ' (' + r.replicas + ')' : ''}</span>
           </div>
           <div style="font-size: 11.5px; color: #cbd5e1;">${r.summary}</div>
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 2px;">
+            <span style="font-size: 10px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">cluster: ${r.cluster}</span>
+            <button @click="${() => focusTarget(r.connected_to)}" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 5px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;">
+              🎯 Focus Workload in 3D
+            </button>
+          </div>
         </div>
       `+"`"+`)}
     </div>

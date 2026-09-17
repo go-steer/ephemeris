@@ -275,4 +275,31 @@ describe('ArrowSandboxRuntime', () => {
     expect(drainPercent).toBe(0);
     expect(hostEl.shadowRoot.querySelector('.drain-badge').textContent).toBe('0%');
   });
+
+  it('auto-repairs partial attribute interpolations from LLM output without Invalid HTML position errors', async () => {
+    // Without _repairArrowJSAttributes, @arrow-js/core throws 'Invalid HTML position' on partial attribute interpolations
+    const llmCodeWithPartialAttributes = `
+      const state = reactive({
+        color: '#34d399',
+        kind: 'SparkApplication'
+      });
+      const template = html\`
+        <div class="crd-card \${state.kind}" style="border-color: \${state.color}; padding: 10px;">
+          <span id="crd-title" style="color: \${() => state.color}; font-weight: bold;">\${() => state.kind}</span>
+        </div>
+      \`;
+      template(container);
+    `;
+
+    const result = runtime.execute(llmCodeWithPartialAttributes, {});
+    expect(result.success).toBe(true);
+
+    const card = hostEl.shadowRoot.querySelector('.crd-card');
+    expect(card).not.toBeNull();
+    expect(card.className).toContain('SparkApplication');
+    expect(card.getAttribute('style')).toContain('border-color: #34d399');
+
+    const title = hostEl.shadowRoot.querySelector('#crd-title');
+    expect(title.textContent).toBe('SparkApplication');
+  });
 });
