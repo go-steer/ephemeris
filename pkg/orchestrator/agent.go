@@ -57,8 +57,8 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 	if cfg.ProjectID == "" {
 		cfg.ProjectID = GetEnvOrDefault("GOOGLE_CLOUD_PROJECT", "gke-demos-345619")
 	}
-	if cfg.Location == "" || cfg.Location == "global" {
-		cfg.Location = "us-central1"
+	if cfg.Location == "" {
+		cfg.Location = "global"
 	}
 
 	agent := &Agent{cfg: cfg}
@@ -148,9 +148,12 @@ User Prompt: %q`, userPrompt)
 }
 
 // injectGeminiReasoning injects a live Vertex AI Gemini Intent Router insight banner into the synthesized ArrowJS component.
-func injectGeminiReasoning(code string, reasoning string) string {
+func injectGeminiReasoning(code string, reasoning string, modelName string) string {
 	if reasoning == "" || reasoning == "Deterministic rule-based intent classification" {
 		return code
+	}
+	if modelName == "" {
+		modelName = "gemini-3.8-flash"
 	}
 	safe := strings.ReplaceAll(reasoning, "`", "'")
 	safe = strings.ReplaceAll(safe, "${", "(")
@@ -159,8 +162,8 @@ func injectGeminiReasoning(code string, reasoning string) string {
 
 	banner := fmt.Sprintf(`<div style="display: flex; align-items: flex-start; gap: 8px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #e0f2fe; line-height: 1.4;">
       <span style="font-size: 14px; line-height: 1;">✨</span>
-      <div><strong style="color: #38bdf8; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.04em;">VERTEX AI GEMINI 2.5 FLASH INTENT ROUTER:</strong> %s</div>
-    </div>`, safe)
+      <div><strong style="color: #38bdf8; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.04em;">VERTEX AI %s INTENT ROUTER:</strong> %s</div>
+    </div>`, strings.ToUpper(modelName), safe)
 
 	target := `color: #f8fafc;">`
 	if idx := strings.Index(code, target); idx != -1 {
@@ -189,7 +192,7 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 		if onStatus != nil {
 			onStatus("Synthesizing Multi-Cluster Incident Fleet Matrix (ArrowJS)...")
 		}
-		return injectGeminiReasoning(synthesizeIssuesListUI(), intent.Reasoning), nil
+		return injectGeminiReasoning(synthesizeIssuesListUI(), intent.Reasoning, a.cfg.Model), nil
 	case ArchetypeNamespaceInventory:
 		ns := intent.TargetNamespace
 		if ns == "" {
@@ -198,20 +201,20 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 		if onStatus != nil {
 			onStatus(fmt.Sprintf("Synthesizing Namespace Workload Inventory for %q (ArrowJS)...", ns))
 		}
-		return injectGeminiReasoning(synthesizeNamespaceListUI(ns), intent.Reasoning), nil
+		return injectGeminiReasoning(synthesizeNamespaceListUI(ns), intent.Reasoning, a.cfg.Model), nil
 	case ArchetypeResourceLeaderboard:
 		if onStatus != nil {
 			onStatus("Synthesizing Cluster Resource Saturation Leaderboard (ArrowJS)...")
 		}
-		return injectGeminiReasoning(synthesizeResourceLeaderboardUI(), intent.Reasoning), nil
+		return injectGeminiReasoning(synthesizeResourceLeaderboardUI(), intent.Reasoning, a.cfg.Model), nil
 	case ArchetypeLogsConsole:
 		if onStatus != nil {
 			onStatus("Synthesizing Live Container Log Console (ArrowJS)...")
 		}
-		return injectGeminiReasoning(synthesizeLogsConsoleUI(), intent.Reasoning), nil
+		return injectGeminiReasoning(synthesizeLogsConsoleUI(), intent.Reasoning, a.cfg.Model), nil
 	}
 
-	return injectGeminiReasoning(a.generateFallbackStream(userPrompt, telemetry, onStatus), intent.Reasoning), nil
+	return injectGeminiReasoning(a.generateFallbackStream(userPrompt, telemetry, onStatus), intent.Reasoning, a.cfg.Model), nil
 }
 
 func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryData, onStatus func(string)) string {
