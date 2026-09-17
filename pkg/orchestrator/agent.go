@@ -45,6 +45,8 @@ type LLMIntentResult struct {
 	TargetNamespace string      `json:"target_namespace"`
 	TargetCluster   string      `json:"target_cluster"`
 	TargetScenario  string      `json:"target_scenario"`
+	TargetKinds     []string    `json:"target_kinds"`
+	TargetStatus    string      `json:"target_status"`
 	Reasoning       string      `json:"reasoning"`
 }
 
@@ -97,10 +99,12 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 func (a *Agent) ResolveIntent(ctx context.Context, userPrompt string, telemetry *api.TelemetryData, onStatus func(string)) LLMIntentResult {
 	fallbackArch, fallbackNS := classifyPromptArchetype(userPrompt, telemetry)
 	targetCluster := extractClusterFromPrompt(userPrompt)
+	targetKinds := extractKindsFromPrompt(userPrompt)
 	fallbackResult := LLMIntentResult{
 		Archetype:       fallbackArch,
 		TargetNamespace: fallbackNS,
 		TargetCluster:   targetCluster,
+		TargetKinds:     targetKinds,
 		Reasoning:       "Deterministic rule-based intent classification",
 	}
 	if fallbackArch == ArchetypeChaosScenario {
@@ -128,12 +132,14 @@ Translate the user's natural-language prompt into a JSON object matching this ex
   "target_namespace": string (one of: "default", "production", "staging", "spark-jobs", "checkout", "data-pipeline", "payments", "monitoring", or "all"),
   "target_cluster": string (one of: "production-us-central1", "staging-us-east4", "analytics-europe-west1", or "" if all clusters),
   "target_scenario": string (one of: "redis-oom", "traffic-spike", "healthy", "default", or "" unless archetype is chaos_scenario),
+  "target_kinds": array of strings (exact Kubernetes Kind names requested by the user, e.g. ["StatefulSet"], ["Deployment"], ["Gateway", "HTTPRoute"], ["Service"], ["SparkApplication"], ["RayCluster"], ["CRD"], or [] if all resources),
+  "target_status": string ("Healthy" | "Degraded" | "Pending" | "" if unspecified),
   "reasoning": string (brief 1-sentence explanation of why this UI archetype and target were chosen)
 }
 
 Rules:
 - Choose "chaos_scenario" if the user asks to inject, simulate, or trigger a failure scenario (e.g. "inject redis oom cascade" -> target_scenario="redis-oom", "simulate black friday traffic spike" -> target_scenario="traffic-spike", "reset all clusters to healthy" -> target_scenario="healthy").
-- Choose "dynamic_custom" if the user asks about Kubernetes controllers (Gateway, HTTPRoute, Service, Deployment, StatefulSet), Custom Resource Definitions (CRDs, SparkApplication, RayCluster), or asks a custom analytical question that requires exploring higher-level K8s resources.
+- Choose "dynamic_custom" if the user asks about Kubernetes controllers (Gateway, HTTPRoute, Service, Deployment, StatefulSet), Custom Resource Definitions (CRDs, SparkApplication, RayCluster), or asks a custom analytical question that requires exploring higher-level K8s resources. Populate "target_kinds" with the exact requested Kind names (e.g., if user asks "show me the statefulsets", target_kinds=["StatefulSet"]; if user asks "show gateways and routes", target_kinds=["Gateway", "HTTPRoute"]; if user asks "show me the deployments", target_kinds=["Deployment"]).
 - Choose "issues_matrix" if the user asks which pods have issues, what is failing/broken/crashing, show anomalies, or asks for issues in a specific cluster (e.g. "show me the issues with the analytics-europe-west1 cluster" -> archetype="issues_matrix", target_cluster="analytics-europe-west1").
 - Choose "logs_console" if the user asks to see/tail/stream logs or stdout/stderr for a workload.
 - Choose "namespace_inventory" if the user asks to list or show all pods/workloads in a namespace (e.g. production, default, spark-jobs).
@@ -161,10 +167,13 @@ User Prompt: %q`, userPrompt)
 				if parsed.TargetCluster == "" && targetCluster != "" {
 					parsed.TargetCluster = targetCluster
 				}
+				if len(parsed.TargetKinds) == 0 && len(targetKinds) > 0 {
+					parsed.TargetKinds = targetKinds
+				}
 				if a.mastHarness != nil {
 					a.mastHarness.RecordIntentStep(parsed, 120)
 				}
-				log.Printf("Gemini Intent Router [%s]: prompt=%q -> archetype=%s, pod=%s, ns=%s, cluster=%s, scenario=%s (%s)", modelName, userPrompt, parsed.Archetype, parsed.TargetPod, parsed.TargetNamespace, parsed.TargetCluster, parsed.TargetScenario, parsed.Reasoning)
+				log.Printf("Gemini Intent Router [%s]: prompt=%q -> archetype=%s, pod=%s, ns=%s, cluster=%s, kinds=%v (%s)", modelName, userPrompt, parsed.Archetype, parsed.TargetPod, parsed.TargetNamespace, parsed.TargetCluster, parsed.TargetKinds, parsed.Reasoning)
 				if onStatus != nil && parsed.Reasoning != "" {
 					onStatus(fmt.Sprintf("🤖 [mast:intent-router] %s", parsed.Reasoning))
 				}
@@ -247,10 +256,18 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 		}
 		code = synthesizeIssuesListUI(topo, findings, envelope, intent.TargetCluster)
 	case ArchetypeDynamicCustom:
+		var allScope []api.K8sResource
+		var resEnvelope string
+		if a.mastHarness != nil {
+			_, allScope, resEnvelope = a.mastHarness.RunResourceSpecialist(ctx, intent, topo, onStatus)
+		}
+		if resEnvelope != "" {
+			envelope = resEnvelope
+		}
 		if onStatus != nil {
 			onStatus("🧠 [mast:arrowjs-compiler] Synthesizing Dynamic Kubernetes & CRD Explorer UI via Gemini 3.8-flash...")
 		}
-		code = a.SynthesizeDynamicArrowJS(ctx, userPrompt, intent, topo, telemetry, findings, envelope, onStatus)
+		code = a.SynthesizeDynamicArrowJS(ctx, userPrompt, intent, topo, telemetry, findings, envelope, allScope, onStatus)
 	case ArchetypeNamespaceInventory:
 		ns := intent.TargetNamespace
 		if ns == "" {
@@ -280,27 +297,74 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 	return injectGeminiReasoning(code, intent.Reasoning, a.cfg.Model, envelope), nil
 }
 
-// hasPartialAttributeInterpolation checks if ArrowJS code contains forbidden partial attribute interpolations.
-func hasPartialAttributeInterpolation(code string) bool {
-	reAttr := regexp.MustCompile(`[a-zA-Z0-9_\-@]+="([^"]*)"`)
-	for _, match := range reAttr.FindAllStringSubmatch(code, -1) {
-		val := strings.TrimSpace(match[1])
-		if strings.Contains(val, "${") {
-			if !strings.HasPrefix(val, "${") || !strings.HasSuffix(val, "}") || strings.Count(val, "${") > 1 {
-				return true
-			}
+func convertInterpolatedStringToConcatenation(val string) string {
+	var parts []string
+	i := 0
+	for i < len(val) {
+		idx := strings.Index(val[i:], "${")
+		if idx == -1 {
+			lit := strings.ReplaceAll(val[i:], "'", "\\'")
+			parts = append(parts, fmt.Sprintf("'%s'", lit))
+			break
 		}
+		if idx > 0 {
+			lit := strings.ReplaceAll(val[i:i+idx], "'", "\\'")
+			parts = append(parts, fmt.Sprintf("'%s'", lit))
+		}
+		exprStart := i + idx + 2
+		depth := 1
+		j := exprStart
+		for j < len(val) && depth > 0 {
+			switch val[j] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+			}
+			j++
+		}
+		expr := val[exprStart : j-1]
+		parts = append(parts, fmt.Sprintf("(%s)", expr))
+		i = j
 	}
-	return false
+	if len(parts) == 0 {
+		return "''"
+	}
+	return strings.Join(parts, " + ")
+}
+
+// repairArrowJSAttributesGo auto-repairs partial HTML attribute interpolations so ArrowJS never throws Invalid HTML position.
+func repairArrowJSAttributesGo(code string) string {
+	reAttr := regexp.MustCompile(`([a-zA-Z0-9_\-@]+)="([^"]*)"`)
+	return reAttr.ReplaceAllStringFunc(code, func(fullMatch string) string {
+		parts := reAttr.FindStringSubmatch(fullMatch)
+		if len(parts) < 3 {
+			return fullMatch
+		}
+		attrName := parts[1]
+		val := parts[2]
+		trimmed := strings.TrimSpace(val)
+		if !strings.Contains(trimmed, "${") {
+			return fullMatch
+		}
+		if strings.HasPrefix(trimmed, "${") && strings.HasSuffix(trimmed, "}") && strings.Count(trimmed, "${") == 1 {
+			return fullMatch
+		}
+		concatExpr := convertInterpolatedStringToConcatenation(val)
+		return fmt.Sprintf(`%s="${() => %s}"`, attrName, concatExpr)
+	})
 }
 
 // SynthesizeDynamicArrowJS renders the interactive Kubernetes & CRD Explorer for K8s object queries, or asks Vertex AI Gemini 3.8-flash to synthesize bespoke ArrowJS UI code for custom analytical queries.
-func (a *Agent) SynthesizeDynamicArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, _ *api.TelemetryData, findings []api.LookoutFinding, _ string, onStatus func(string)) string {
-	fallbackCode := synthesizeK8sResourcesUI(topo, intent.TargetCluster, userPrompt)
+func (a *Agent) SynthesizeDynamicArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, _ *api.TelemetryData, findings []api.LookoutFinding, envelope string, allScope []api.K8sResource, onStatus func(string)) string {
+	targetKinds := intent.TargetKinds
+	if len(targetKinds) == 0 {
+		targetKinds = extractKindsFromPrompt(userPrompt)
+	}
+	fallbackCode := synthesizeK8sResourcesUI(allScope, intent.TargetCluster, targetKinds, envelope)
 
-	// Use the rich interactive K8s Controllers & CRD Explorer (with 3D focus and filter tabs) for all K8s controller/CRD queries
-	pLower := strings.ToLower(userPrompt)
-	if strings.Contains(pLower, "gateway") || strings.Contains(pLower, "httproute") || strings.Contains(pLower, "route") || strings.Contains(pLower, "crd") || strings.Contains(pLower, "custom resource") || strings.Contains(pLower, "spark") || strings.Contains(pLower, "ray") || strings.Contains(pLower, "deployment") || strings.Contains(pLower, "statefulset") {
+	// Use the rich interactive K8s Controllers & CRD Explorer (with 3D focus and dynamic per-Kind filter pills) for all K8s controller/CRD queries
+	if len(targetKinds) > 0 || strings.Contains(strings.ToLower(userPrompt), "controller") {
 		return fallbackCode
 	}
 
@@ -349,7 +413,8 @@ Requirements:
 		cleaned = strings.TrimPrefix(cleaned, "```")
 		cleaned = strings.TrimSuffix(cleaned, "```")
 		cleaned = strings.TrimSpace(cleaned)
-		if strings.Contains(cleaned, "reactive(") && strings.Contains(cleaned, "html`") && strings.Contains(cleaned, "template(container)") && !hasPartialAttributeInterpolation(cleaned) {
+		cleaned = repairArrowJSAttributesGo(cleaned)
+		if strings.Contains(cleaned, "reactive(") && strings.Contains(cleaned, "html`") && strings.Contains(cleaned, "template(container)") {
 			if onStatus != nil {
 				onStatus("✨ [mast:arrowjs-compiler] Synthesized bespoke ArrowJS UI via Gemini 3.8-flash")
 			}
@@ -374,7 +439,8 @@ func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryDa
 		case ArchetypeIssuesFleetMatrix:
 			onStatus("Executing MCP tool: lookout_findings(status=['CrashLoopBackOff', 'Pending'])...")
 		case ArchetypeDynamicCustom:
-			onStatus("Executing MCP tool: lookout_resources(kind=['Gateway', 'HTTPRoute', 'Deployment', 'CRD'])...")
+			kinds := extractKindsFromPrompt(prompt)
+			onStatus(fmt.Sprintf("Executing MCP tool: lookout_resources(kinds=%v)...", kinds))
 		case ArchetypeNamespaceInventory:
 			if targetNS == "" {
 				targetNS = "production"
@@ -419,7 +485,15 @@ func (a *Agent) generateFallback(prompt string, telemetry *api.TelemetryData) st
 	case ArchetypeIssuesFleetMatrix:
 		return synthesizeIssuesListUI(topo, findings, envelope, targetNS)
 	case ArchetypeDynamicCustom:
-		return synthesizeK8sResourcesUI(topo, targetNS, prompt)
+		var allScope []api.K8sResource
+		if topo != nil {
+			for _, c := range topo.Clusters {
+				for _, ns := range c.Namespaces {
+					allScope = append(allScope, ns.Resources...)
+				}
+			}
+		}
+		return synthesizeK8sResourcesUI(allScope, targetNS, extractKindsFromPrompt(prompt), envelope)
 	case ArchetypeNamespaceInventory:
 		return synthesizeNamespaceListUI(targetNS, topo)
 	case ArchetypeResourceLeaderboard:

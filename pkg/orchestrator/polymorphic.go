@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/go-steer/ephemeris/pkg/api"
+	"github.com/go-steer/ephemeris/pkg/mcp"
 )
 
 // UIArchetype represents the polymorphic Generative UI layout type.
@@ -50,6 +51,45 @@ func extractClusterFromPrompt(p string) string {
 	return ""
 }
 
+func extractKindsFromPrompt(p string) []string {
+	pLower := strings.ToLower(p)
+	var kinds []string
+	addKind := func(k string) {
+		for _, existing := range kinds {
+			if strings.EqualFold(existing, k) {
+				return
+			}
+		}
+		kinds = append(kinds, k)
+	}
+
+	if strings.Contains(pLower, "gateway") {
+		addKind("Gateway")
+	}
+	if strings.Contains(pLower, "httproute") || strings.Contains(pLower, "route") {
+		addKind("HTTPRoute")
+	}
+	if strings.Contains(pLower, "deployment") {
+		addKind("Deployment")
+	}
+	if strings.Contains(pLower, "statefulset") {
+		addKind("StatefulSet")
+	}
+	if strings.Contains(pLower, "services") || strings.Contains(pLower, "k8s service") || strings.Contains(pLower, "show service") || strings.Contains(pLower, "list service") {
+		addKind("Service")
+	}
+	if strings.Contains(pLower, "sparkapplication") || strings.Contains(pLower, "spark job") || strings.Contains(pLower, "spark-pi") {
+		addKind("SparkApplication")
+	}
+	if strings.Contains(pLower, "raycluster") || strings.Contains(pLower, "ray cluster") {
+		addKind("RayCluster")
+	}
+	if strings.Contains(pLower, "crd") || strings.Contains(pLower, "custom resource") {
+		addKind("CRD")
+	}
+	return kinds
+}
+
 // classifyPromptArchetype inspects the user prompt and target resource URI to select the UI archetype.
 func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArchetype, string) {
 	p := strings.ToLower(strings.TrimSpace(prompt))
@@ -73,7 +113,7 @@ func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArc
 	}
 
 	// 0b. K8s Controllers, Gateways, HTTPRoutes, CRDs, or Custom Analytical queries -> Tier 2 Dynamic UI
-	if strings.Contains(p, "gateway") || strings.Contains(p, "httproute") || strings.Contains(p, "crd") || strings.Contains(p, "custom resource") || strings.Contains(p, "sparkapplication") || strings.Contains(p, "raycluster") || strings.Contains(p, "deployment") || strings.Contains(p, "statefulset") {
+	if len(extractKindsFromPrompt(p)) > 0 || strings.Contains(p, "controllers") {
 		return ArchetypeDynamicCustom, extractClusterFromPrompt(p)
 	}
 
@@ -511,147 +551,113 @@ template(container);
 `, headerTitle, healthyTitle, healthyDesc, envelope, string(findingsJSON), string(issuesJSON))
 }
 
-// synthesizeK8sResourcesUI generates a reactive ArrowJS K8s Controller & CRD Object Explorer bound to live topology.
-func synthesizeK8sResourcesUI(topology *api.TopologyData, targetCluster string, userPrompt string) string {
-	resources := make([]api.K8sResource, 0)
+// synthesizeK8sResourcesUI generates a reactive ArrowJS K8s Controller & CRD Object Explorer bound to live MCP resource queries.
+func synthesizeK8sResourcesUI(allScope []api.K8sResource, targetCluster string, targetKinds []string, envelope string) string {
+	resources := make([]api.K8sResource, 0, len(allScope))
 	targetLower := strings.ToLower(strings.TrimSpace(targetCluster))
 
-	if topology != nil {
-		for _, cluster := range topology.Clusters {
-			if targetLower != "" && !strings.Contains(strings.ToLower(cluster.Name), targetLower) && !strings.Contains(targetLower, strings.ToLower(cluster.Name)) {
-				continue
-			}
-			for _, ns := range cluster.Namespaces {
-				resources = append(resources, ns.Resources...)
-			}
+	for _, r := range allScope {
+		if targetLower != "" && !strings.Contains(strings.ToLower(r.Cluster), targetLower) && !strings.Contains(targetLower, strings.ToLower(r.Cluster)) {
+			continue
 		}
+		resources = append(resources, r)
 	}
 
 	if len(resources) == 0 {
-		if targetLower != "" && strings.Contains(targetLower, "analytics") {
-			resources = []api.K8sResource{
-				{
-					ID:          "crd-spark-pi",
-					Kind:        "SparkApplication",
-					APIVersion:  "sparkoperator.k8s.io/v1beta2",
-					Name:        "spark-pi-analytics",
-					Namespace:   "spark-jobs",
-					Cluster:     "analytics-europe-west1",
-					Status:      "Pending",
-					Replicas:    "0/4 Executors",
-					IsCRD:       true,
-					Summary:     "Driver scheduled; executors Pending GPU/CPU node pool scale-up",
-					ConnectedTo: []string{"batch-ingestor"},
-				},
-				{
-					ID:          "crd-ray-llm",
-					Kind:        "RayCluster",
-					APIVersion:  "ray.io/v1",
-					Name:        "ray-llm-inference",
-					Namespace:   "spark-jobs",
-					Cluster:     "analytics-europe-west1",
-					Status:      "Healthy",
-					Replicas:    "1 Head, 2 Workers",
-					IsCRD:       true,
-					Summary:     "Serving distributed embedding pipeline on L4 GPU pool",
-					ConnectedTo: []string{"batch-ingestor"},
-				},
+		for _, r := range mcp.DefaultFallbackResources() {
+			if targetLower != "" && !strings.Contains(strings.ToLower(r.Cluster), targetLower) && !strings.Contains(targetLower, strings.ToLower(r.Cluster)) {
+				continue
 			}
-		} else {
-			resources = []api.K8sResource{
-				{
-					ID:          "gw-boutique",
-					Kind:        "Gateway",
-					APIVersion:  "gateway.networking.k8s.io/v1",
-					Name:        "boutique-gateway",
-					Namespace:   "production",
-					Cluster:     "production-us-central1",
-					Status:      "Healthy",
-					Replicas:    "2/2 Programmed",
-					IsCRD:       false,
-					Summary:     "External HTTPS Envoy Gateway (IP: 34.117.59.81)",
-					ConnectedTo: []string{"frontend"},
-				},
-				{
-					ID:          "route-checkout",
-					Kind:        "HTTPRoute",
-					APIVersion:  "gateway.networking.k8s.io/v1",
-					Name:        "checkout-route",
-					Namespace:   "production",
-					Cluster:     "production-us-central1",
-					Status:      "Degraded",
-					Replicas:    "Weight: 90/10",
-					IsCRD:       false,
-					Summary:     "Routes /api/checkout -> payment-service (5xx elevated)",
-					ConnectedTo: []string{"payment-service"},
-				},
-				{
-					ID:          "crd-spark-pi",
-					Kind:        "SparkApplication",
-					APIVersion:  "sparkoperator.k8s.io/v1beta2",
-					Name:        "spark-pi-analytics",
-					Namespace:   "spark-jobs",
-					Cluster:     "analytics-europe-west1",
-					Status:      "Pending",
-					Replicas:    "0/4 Executors",
-					IsCRD:       true,
-					Summary:     "Driver scheduled; executors Pending GPU/CPU node pool scale-up",
-					ConnectedTo: []string{"batch-ingestor"},
-				},
-				{
-					ID:          "crd-ray-llm",
-					Kind:        "RayCluster",
-					APIVersion:  "ray.io/v1",
-					Name:        "ray-llm-inference",
-					Namespace:   "spark-jobs",
-					Cluster:     "analytics-europe-west1",
-					Status:      "Healthy",
-					Replicas:    "1 Head, 2 Workers",
-					IsCRD:       true,
-					Summary:     "Serving distributed embedding pipeline on L4 GPU pool",
-					ConnectedTo: []string{"batch-ingestor"},
-				},
-			}
+			resources = append(resources, r)
 		}
 	}
 
-	pLower := strings.ToLower(userPrompt)
-	initialFilter := "ALL"
-	switch {
-	case strings.Contains(pLower, "gateway") || strings.Contains(pLower, "route") || strings.Contains(pLower, "httproute"):
-		initialFilter = "GATEWAY"
-	case strings.Contains(pLower, "crd") || strings.Contains(pLower, "custom resource") || strings.Contains(pLower, "spark") || strings.Contains(pLower, "ray"):
-		initialFilter = "CRD"
-	case strings.Contains(pLower, "deployment") || strings.Contains(pLower, "statefulset") || strings.Contains(pLower, "service") || strings.Contains(pLower, "controller"):
-		initialFilter = "WORKLOAD"
+	canonicalOrder := []string{"Gateway", "HTTPRoute", "Deployment", "StatefulSet", "Service", "SparkApplication", "RayCluster"}
+	seenKinds := make(map[string]bool)
+	var availableKinds []string
+
+	for _, k := range canonicalOrder {
+		for _, r := range resources {
+			if strings.EqualFold(r.Kind, k) && !seenKinds[k] {
+				seenKinds[k] = true
+				availableKinds = append(availableKinds, k)
+			}
+		}
+	}
+	for _, r := range resources {
+		if !seenKinds[r.Kind] && r.Kind != "" {
+			seenKinds[r.Kind] = true
+			availableKinds = append(availableKinds, r.Kind)
+		}
+	}
+	for _, r := range resources {
+		if r.IsCRD && !seenKinds["CRD"] {
+			seenKinds["CRD"] = true
+			availableKinds = append(availableKinds, "CRD")
+			break
+		}
+	}
+	for _, tk := range targetKinds {
+		if !seenKinds[tk] && tk != "" {
+			seenKinds[tk] = true
+			availableKinds = append(availableKinds, tk)
+		}
+	}
+
+	if targetKinds == nil {
+		targetKinds = []string{}
+	}
+	if envelope == "" {
+		envelope = fmt.Sprintf("MCP tool=lookout_resources(kinds=%v) scanned=%d", targetKinds, len(resources))
 	}
 
 	resJSON, _ := json.Marshal(resources)
+	selectedKindsJSON, _ := json.Marshal(targetKinds)
+	availableKindsJSON, _ := json.Marshal(availableKinds)
+
 	title := "Kubernetes Controllers & CRD Explorer"
 	if targetCluster != "" {
 		title = fmt.Sprintf("K8s & CRD Objects: %s", targetCluster)
 	}
 
 	return fmt.Sprintf(`const state = reactive({
-  filterKind: %q,
+  selectedKinds: %s || [],
+  availableKinds: %s || [],
   title: %q,
+  envelope: %q,
   resources: %s || []
 });
 
+function isKindSelected(kind) {
+  const sel = state.selectedKinds || [];
+  return sel.some(k => k.toLowerCase() === kind.toLowerCase());
+}
+
+function selectKind(kind) {
+  state.selectedKinds = [kind];
+}
+
+function clearFilter() {
+  state.selectedKinds = [];
+}
+
 function getFiltered() {
   const list = state.resources || [];
-  if (state.filterKind === 'ALL') return list;
-  if (state.filterKind === 'CRD') return list.filter(r => r.is_crd);
-  if (state.filterKind === 'GATEWAY') return list.filter(r => r.kind === 'Gateway' || r.kind === 'HTTPRoute');
-  if (state.filterKind === 'WORKLOAD') return list.filter(r => r.kind === 'Deployment' || r.kind === 'StatefulSet' || r.kind === 'Service');
-  return list.filter(r => r.kind.toLowerCase() === state.filterKind.toLowerCase());
+  const sel = state.selectedKinds || [];
+  if (sel.length === 0) return list;
+  return list.filter(r => {
+    for (const k of sel) {
+      if (k.toUpperCase() === 'CRD' && r.is_crd) return true;
+      if (r.kind && r.kind.toLowerCase() === k.toLowerCase()) return true;
+    }
+    return false;
+  });
 }
 
 function getFilterLabel() {
-  if (state.filterKind === 'GATEWAY') return 'Gateways & HTTPRoutes';
-  if (state.filterKind === 'CRD') return 'Custom Resources (CRDs)';
-  if (state.filterKind === 'WORKLOAD') return 'Workload Controllers';
-  return 'All Objects';
+  const sel = state.selectedKinds || [];
+  if (sel.length === 0) return 'All Objects';
+  return sel.join(' + ');
 }
 
 function focusTarget(targets) {
@@ -665,16 +671,19 @@ function focusTarget(targets) {
 
 const template = html`+"`"+`
   <div style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
-    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.35);">
-      <div style="display: flex; align-items: center; gap: 10px;">
-        <span style="background: rgba(168, 85, 247, 0.18); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">${() => state.title}</span>
-        <span style="font-size: 12px; color: #cbd5e1;">${() => getFilterLabel()} (${() => getFiltered().length})</span>
+    <div style="display: flex; flex-direction: column; gap: 8px; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.35);">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="background: rgba(168, 85, 247, 0.18); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">${() => state.title}</span>
+          <span style="font-size: 12px; color: #cbd5e1; font-weight: 600;">${() => getFilterLabel()} (${() => getFiltered().length})</span>
+        </div>
+        <span style="background: rgba(15, 23, 42, 0.9); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); padding: 2px 7px; border-radius: 4px; font-size: 10px; font-family: 'JetBrains Mono', monospace;">${() => state.envelope}</span>
       </div>
-      <div style="display: flex; gap: 6px;">
-        <button @click="${() => { state.filterKind = 'ALL'; }}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (state.filterKind === 'ALL' ? '#c084fc; background: rgba(168, 85, 247, 0.25); color: #fff; font-weight: 700;' : 'rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.9); color: #cbd5e1;')}">All</button>
-        <button @click="${() => { state.filterKind = 'GATEWAY'; }}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (state.filterKind === 'GATEWAY' ? '#38bdf8; background: rgba(56, 189, 248, 0.25); color: #fff; font-weight: 700;' : 'rgba(56, 189, 248, 0.3); background: rgba(30, 41, 59, 0.9); color: #38bdf8;')}">Gateways & Routes</button>
-        <button @click="${() => { state.filterKind = 'WORKLOAD'; }}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (state.filterKind === 'WORKLOAD' ? '#34d399; background: rgba(52, 211, 153, 0.25); color: #fff; font-weight: 700;' : 'rgba(52, 211, 153, 0.3); background: rgba(30, 41, 59, 0.9); color: #a7f3d0;')}">Controllers</button>
-        <button @click="${() => { state.filterKind = 'CRD'; }}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (state.filterKind === 'CRD' ? '#e879f9; background: rgba(217, 70, 239, 0.25); color: #fff; font-weight: 700;' : 'rgba(217, 70, 239, 0.3); background: rgba(30, 41, 59, 0.9); color: #f0abfc;')}">CRDs</button>
+      <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+        <button @click="${() => clearFilter()}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + ((state.selectedKinds || []).length === 0 ? '#c084fc; background: rgba(168, 85, 247, 0.25); color: #fff; font-weight: 700;' : 'rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.9); color: #cbd5e1;')}">All (${() => (state.resources || []).length})</button>
+        ${() => (state.availableKinds || []).map(kind => html`+"`"+`
+          <button @click="${() => selectKind(kind)}" style="${() => 'border-radius: 5px; padding: 3px 8px; font-size: 10px; cursor: pointer; border: 1px solid ' + (isKindSelected(kind) ? '#38bdf8; background: rgba(56, 189, 248, 0.28); color: #fff; font-weight: 700;' : 'rgba(56, 189, 248, 0.25); background: rgba(30, 41, 59, 0.9); color: #93c5fd;')}">${() => kind}</button>
+        `+"`"+`)}
       </div>
     </div>
 
@@ -703,7 +712,7 @@ const template = html`+"`"+`
 `+"`"+`;
 
 template(container);
-`, initialFilter, title, string(resJSON))
+`, string(selectedKindsJSON), string(availableKindsJSON), title, envelope, string(resJSON))
 }
 
 type uiNamespacePod struct {

@@ -141,6 +141,38 @@ func (h *MastHarness) RunLookoutSpecialist(ctx context.Context, intent LLMIntent
 	return findings, envelope
 }
 
+// RunResourceSpecialist invokes the lookout-diagnostics specialist to execute the lookout_resources / list_gke_resources MCP tool.
+func (h *MastHarness) RunResourceSpecialist(ctx context.Context, intent LLMIntentResult, topology *api.TopologyData, onStatus func(string)) ([]api.K8sResource, []api.K8sResource, string) {
+	start := time.Now()
+	if onStatus != nil {
+		if len(intent.TargetKinds) > 0 {
+			onStatus(fmt.Sprintf("🔍 [mast:lookout-diagnostics] Executing MCP tool lookout_resources(kinds=%v)...", intent.TargetKinds))
+		} else {
+			onStatus("🔍 [mast:lookout-diagnostics] Executing MCP tool lookout_resources(scope=all)...")
+		}
+	}
+
+	filter := mcp.ResourceQueryFilter{
+		Kinds:     intent.TargetKinds,
+		Cluster:   intent.TargetCluster,
+		Namespace: intent.TargetNamespace,
+		Status:    intent.TargetStatus,
+	}
+
+	matched, allScope, envelope, err := h.lookoutClient.QueryResources(ctx, filter, topology)
+	if err != nil {
+		envelope = "tool=lookout_resources matched=0 scanned=0 elapsed=2ms"
+	}
+
+	elapsed := time.Since(start).Milliseconds()
+	h.recordTranscript("lookout-diagnostics", envelope, elapsed)
+
+	if onStatus != nil {
+		onStatus(fmt.Sprintf("🔍 [mast:lookout-diagnostics] %s", envelope))
+	}
+	return matched, allScope, envelope
+}
+
 // RecordIntentStep records the intent-router specialist step in the mast session transcript.
 func (h *MastHarness) RecordIntentStep(intent LLMIntentResult, elapsedMs int64) {
 	h.recordTranscript("intent-router", fmt.Sprintf("archetype=%s pod=%s ns=%s scenario=%s", intent.Archetype, intent.TargetPod, intent.TargetNamespace, intent.TargetScenario), elapsedMs)

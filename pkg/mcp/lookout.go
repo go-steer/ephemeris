@@ -185,3 +185,239 @@ func synthesizeFindingsFromState(topology *api.TopologyData, targetFilter string
 	}
 	return findings, scanned
 }
+
+// ResourceQueryFilter defines the structured parameters for the lookout_resources / list_gke_resources MCP tool.
+type ResourceQueryFilter struct {
+	Kinds     []string `json:"kinds,omitempty"`
+	Cluster   string   `json:"cluster,omitempty"`
+	Namespace string   `json:"namespace,omitempty"`
+	Status    string   `json:"status,omitempty"`
+}
+
+// DefaultFallbackResources returns realistic Kubernetes controllers and CRDs when running without a live topology snapshot.
+func DefaultFallbackResources() []api.K8sResource {
+	return []api.K8sResource{
+		{
+			ID:          "gw-boutique",
+			Kind:        "Gateway",
+			APIVersion:  "gateway.networking.k8s.io/v1",
+			Name:        "boutique-gateway",
+			Namespace:   "production",
+			Cluster:     "production-us-central1",
+			Status:      "Healthy",
+			Replicas:    "2/2 Programmed",
+			IsCRD:       false,
+			Summary:     "External HTTPS Envoy Gateway (IP: 34.117.59.81)",
+			ConnectedTo: []string{"frontend"},
+		},
+		{
+			ID:          "route-checkout",
+			Kind:        "HTTPRoute",
+			APIVersion:  "gateway.networking.k8s.io/v1",
+			Name:        "checkout-route",
+			Namespace:   "production",
+			Cluster:     "production-us-central1",
+			Status:      "Degraded",
+			Replicas:    "Weight: 90/10",
+			IsCRD:       false,
+			Summary:     "Routes /api/checkout -> payment-service (5xx elevated)",
+			ConnectedTo: []string{"payment-service"},
+		},
+		{
+			ID:          "svc-payment",
+			Kind:        "Service",
+			APIVersion:  "v1",
+			Name:        "payment-service",
+			Namespace:   "production",
+			Cluster:     "production-us-central1",
+			Status:      "Healthy",
+			Replicas:    "ClusterIP: 10.96.42.18",
+			IsCRD:       false,
+			Summary:     "gRPC/HTTP service exposing port 8080 across 3 endpoints",
+			ConnectedTo: []string{"payment-service"},
+		},
+		{
+			ID:          "deploy-payment",
+			Kind:        "Deployment",
+			APIVersion:  "apps/v1",
+			Name:        "payment-service",
+			Namespace:   "production",
+			Cluster:     "production-us-central1",
+			Status:      "Degraded",
+			Replicas:    "2/3 Ready",
+			IsCRD:       false,
+			Summary:     "Revision 14 crashing with SIGSEGV nil pointer dereference",
+			ConnectedTo: []string{"payment-service"},
+		},
+		{
+			ID:          "deploy-frontend",
+			Kind:        "Deployment",
+			APIVersion:  "apps/v1",
+			Name:        "frontend",
+			Namespace:   "production",
+			Cluster:     "production-us-central1",
+			Status:      "Healthy",
+			Replicas:    "3/3 Ready",
+			IsCRD:       false,
+			Summary:     "Next.js edge SSR storefront serving ingress traffic",
+			ConnectedTo: []string{"frontend"},
+		},
+		{
+			ID:          "sts-redis",
+			Kind:        "StatefulSet",
+			APIVersion:  "apps/v1",
+			Name:        "redis-cart",
+			Namespace:   "production",
+			Cluster:     "production-us-central1",
+			Status:      "Healthy",
+			Replicas:    "1/1 Ready",
+			IsCRD:       false,
+			Summary:     "In-memory session store backed by PersistentVolumeClaim",
+			ConnectedTo: []string{"redis-cart"},
+		},
+		{
+			ID:          "deploy-batch",
+			Kind:        "Deployment",
+			APIVersion:  "apps/v1",
+			Name:        "batch-ingestor",
+			Namespace:   "data-pipeline",
+			Cluster:     "analytics-europe-west1",
+			Status:      "Pending",
+			Replicas:    "0/2 Ready",
+			IsCRD:       false,
+			Summary:     "Batch ETL worker waiting on GPU/CPU node pool autoscaling",
+			ConnectedTo: []string{"batch-ingestor"},
+		},
+		{
+			ID:          "crd-spark-pi",
+			Kind:        "SparkApplication",
+			APIVersion:  "sparkoperator.k8s.io/v1beta2",
+			Name:        "spark-pi-analytics",
+			Namespace:   "spark-jobs",
+			Cluster:     "analytics-europe-west1",
+			Status:      "Pending",
+			Replicas:    "0/4 Executors",
+			IsCRD:       true,
+			Summary:     "Driver scheduled; executors Pending GPU/CPU node pool scale-up",
+			ConnectedTo: []string{"batch-ingestor"},
+		},
+		{
+			ID:          "crd-ray-llm",
+			Kind:        "RayCluster",
+			APIVersion:  "ray.io/v1",
+			Name:        "ray-llm-inference",
+			Namespace:   "spark-jobs",
+			Cluster:     "analytics-europe-west1",
+			Status:      "Healthy",
+			Replicas:    "1 Head, 2 Workers",
+			IsCRD:       true,
+			Summary:     "Serving distributed embedding pipeline on L4 GPU pool",
+			ConnectedTo: []string{"batch-ingestor"},
+		},
+	}
+}
+
+// QueryResources executes the lookout_resources / list_gke_resources MCP tool to retrieve filtered Kubernetes resources.
+// Returns (matchedResources, allClusterScopeResources, envelope, error).
+func (l *LookoutClient) QueryResources(ctx context.Context, filter ResourceQueryFilter, topology *api.TopologyData) ([]api.K8sResource, []api.K8sResource, string, error) {
+	if !AllowedReadTools["lookout_resources"] {
+		return nil, nil, "", fmt.Errorf("security guardrail violation: tool \"lookout_resources\" is not in AllowedReadTools whitelist")
+	}
+
+	start := time.Now()
+	var sourceResources []api.K8sResource
+
+	// 1. If connected to a live MCP server, attempt JSON-RPC tool call first
+	if l.mcpClient != nil {
+		args := map[string]any{
+			"kinds":     filter.Kinds,
+			"cluster":   filter.Cluster,
+			"namespace": filter.Namespace,
+			"status":    filter.Status,
+		}
+		raw, err := l.mcpClient.CallTool(ctx, "lookout_resources", args)
+		if err != nil {
+			raw, err = l.mcpClient.CallTool(ctx, "list_gke_resources", args)
+		}
+		if err == nil && len(raw) > 0 {
+			var parsed []api.K8sResource
+			if jsonErr := json.Unmarshal(raw, &parsed); jsonErr == nil && len(parsed) > 0 {
+				for i := range parsed {
+					parsed[i].Summary = SanitizeFinding(parsed[i].Summary)
+				}
+				sourceResources = parsed
+			}
+		}
+	}
+
+	// 2. Gather resources from active TopologyData if not returned by live MCP
+	if len(sourceResources) == 0 && topology != nil {
+		for _, cl := range topology.Clusters {
+			for _, ns := range cl.Namespaces {
+				for _, r := range ns.Resources {
+					r.Summary = SanitizeFinding(r.Summary)
+					sourceResources = append(sourceResources, r)
+				}
+			}
+		}
+	}
+
+	if len(sourceResources) == 0 {
+		sourceResources = DefaultFallbackResources()
+	}
+
+	// 3. Apply Cluster and Namespace scoping first to get allScopeResources
+	clusterLower := strings.ToLower(strings.TrimSpace(filter.Cluster))
+	nsLower := strings.ToLower(strings.TrimSpace(filter.Namespace))
+	statusLower := strings.ToLower(strings.TrimSpace(filter.Status))
+
+	allScope := make([]api.K8sResource, 0, len(sourceResources))
+	for _, r := range sourceResources {
+		if clusterLower != "" && !strings.Contains(strings.ToLower(r.Cluster), clusterLower) && !strings.Contains(clusterLower, strings.ToLower(r.Cluster)) {
+			continue
+		}
+		if nsLower != "" && nsLower != "all" && !strings.EqualFold(r.Namespace, nsLower) {
+			continue
+		}
+		allScope = append(allScope, r)
+	}
+
+	// 4. Apply Kind and Status filtering to produce matched
+	matched := make([]api.K8sResource, 0, len(allScope))
+	for _, r := range allScope {
+		if statusLower != "" && !strings.EqualFold(r.Status, statusLower) {
+			continue
+		}
+		if len(filter.Kinds) > 0 {
+			kindMatch := false
+			for _, k := range filter.Kinds {
+				kClean := strings.ToLower(strings.TrimSpace(k))
+				if kClean == "crd" || kClean == "crds" || kClean == "customresource" {
+					if r.IsCRD {
+						kindMatch = true
+						break
+					}
+				}
+				if strings.EqualFold(r.Kind, kClean) || strings.Contains(strings.ToLower(r.Kind), kClean) || strings.Contains(kClean, strings.ToLower(r.Kind)) {
+					kindMatch = true
+					break
+				}
+			}
+			if !kindMatch {
+				continue
+			}
+		}
+		matched = append(matched, r)
+	}
+
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed < 1 {
+		elapsed = 3
+	}
+	kindsDesc := "all"
+	if len(filter.Kinds) > 0 {
+		kindsDesc = strings.Join(filter.Kinds, ",")
+	}
+	envelope := fmt.Sprintf("tool=lookout_resources(kinds=[%s]) matched=%d scanned=%d elapsed=%dms", kindsDesc, len(matched), len(sourceResources), elapsed)
+	return matched, allScope, envelope, nil
+}

@@ -44,14 +44,15 @@ var AllowedReadTools = map[string]bool{
 	"query_logs":         true,
 	"get_metrics":        true,
 	// go-steer/k8s-lookout read-path MCP diagnostic tools
-	"lookout_triage":   true,
-	"lookout_logs":     true,
-	"lookout_events":   true,
-	"lookout_top":      true,
-	"lookout_health":   true,
-	"lookout_findings": true,
-	"lookout_delta":    true,
-	"lookout_state":    true,
+	"lookout_triage":    true,
+	"lookout_logs":      true,
+	"lookout_events":    true,
+	"lookout_top":       true,
+	"lookout_health":    true,
+	"lookout_findings":  true,
+	"lookout_delta":     true,
+	"lookout_state":     true,
+	"lookout_resources": true,
 }
 
 // ToolInfo describes an available tool returned by MCP tools/list.

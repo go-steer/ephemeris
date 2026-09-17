@@ -237,13 +237,25 @@ func TestAgent_PolymorphicArchetypes(t *testing.T) {
 			name:             "k8s_crds_analytics",
 			prompt:           "what CRDs are running in analytics-europe-west1?",
 			expectedType:     ArchetypeDynamicCustom,
-			expectedContains: `filterKind: "CRD"`,
+			expectedContains: `selectedKinds: ["CRD"]`,
 		},
 		{
 			name:             "k8s_gateways_and_routes",
 			prompt:           "show gateways and routes",
 			expectedType:     ArchetypeDynamicCustom,
-			expectedContains: `filterKind: "GATEWAY"`,
+			expectedContains: `selectedKinds: ["Gateway","HTTPRoute"]`,
+		},
+		{
+			name:             "k8s_statefulsets",
+			prompt:           "show me the statefulsets",
+			expectedType:     ArchetypeDynamicCustom,
+			expectedContains: `selectedKinds: ["StatefulSet"]`,
+		},
+		{
+			name:             "k8s_deployments",
+			prompt:           "show me the deployments",
+			expectedType:     ArchetypeDynamicCustom,
+			expectedContains: `selectedKinds: ["Deployment"]`,
 		},
 	}
 
@@ -266,5 +278,14 @@ func TestAgent_PolymorphicArchetypes(t *testing.T) {
 			}
 			assertNoPartialAttributeInterpolation(t, code)
 		})
+	}
+}
+
+func TestRepairArrowJSAttributesGo(t *testing.T) {
+	broken := `<div style="color: ${state.color}; background: #000;" class="card ${state.active ? 'active' : ''}">Hello</div>`
+	repaired := repairArrowJSAttributesGo(broken)
+	assertNoPartialAttributeInterpolation(t, repaired)
+	if !strings.Contains(repaired, `style="${() => `) {
+		t.Errorf("expected style attribute to be repaired to ArrowJS reactive function, got %s", repaired)
 	}
 }
