@@ -282,7 +282,10 @@ type uiIssuePod struct {
 
 // synthesizeIssuesListUI generates a reactive ArrowJS Multi-Cluster Incident Fleet Matrix bound to live topology and k8s-lookout findings.
 func synthesizeIssuesListUI(topology *api.TopologyData, findings []api.LookoutFinding, envelope string) string {
-	var issues []uiIssuePod
+	issues := make([]uiIssuePod, 0)
+	if findings == nil {
+		findings = make([]api.LookoutFinding, 0)
+	}
 
 	if topology != nil {
 		for _, cluster := range topology.Clusters {
@@ -331,8 +334,8 @@ func synthesizeIssuesListUI(topology *api.TopologyData, findings []api.LookoutFi
 	return fmt.Sprintf(`const state = reactive({
   selectedFilter: 'ALL',
   lookoutEnvelope: %q,
-  lookoutFindings: %s,
-  issues: %s
+  lookoutFindings: %s || [],
+  issues: %s || []
 });
 
 function focusPod(podName) {
@@ -359,9 +362,19 @@ function viewLogs(podName) {
   }));
 }
 
-function triggerScenario(scenarioPrompt) {
-  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
-    detail: { prompt: scenarioPrompt },
+function fixNow(podName) {
+  state.issues = (state.issues || []).filter(p => p.name !== podName);
+  state.lookoutFindings = (state.lookoutFindings || []).filter(f => !f.resource || !f.resource.includes(podName));
+  container.dispatchEvent(new CustomEvent('ephemeris-remediated', {
+    detail: { podId: podName, status: 'Running', action: 'rollback' },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+function triggerScenario(scenarioId) {
+  container.dispatchEvent(new CustomEvent('ephemeris-scenario-select', {
+    detail: { scenarioId: scenarioId },
     bubbles: true,
     composed: true
   }));
@@ -372,7 +385,7 @@ const template = html`+"`"+`
     <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.35);">
       <div style="display: flex; align-items: center; gap: 10px;">
         <span style="background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.45); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">Multi-Cluster Incident Fleet Matrix</span>
-        <span style="font-size: 12px; color: #cbd5e1;">${() => state.issues.length} Active Anomalies Across Clusters</span>
+        <span style="font-size: 12px; color: #cbd5e1;">${() => (state.issues || []).length} Active Anomalies Across Clusters</span>
       </div>
       <span style="font-size: 11px; color: #38bdf8; font-family: 'JetBrains Mono', monospace;">lookout: ${() => state.lookoutEnvelope}</span>
     </div>
@@ -382,7 +395,7 @@ const template = html`+"`"+`
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span style="font-size: 10px; font-weight: 700; color: #38bdf8; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.05em;">🔍 GO-STEER/K8S-LOOKOUT MCP FINDINGS (${() => state.lookoutEnvelope})</span>
         </div>
-        ${() => state.lookoutFindings.map(f => html`+"`"+`
+        ${() => (state.lookoutFindings || []).map(f => html`+"`"+`
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; background: rgba(2, 6, 23, 0.65); padding: 6px 10px; border-radius: 6px; border-left: 3px solid #f87171; font-size: 11px;">
             <div style="display: flex; flex-direction: column; gap: 2px;">
               <div style="display: flex; align-items: center; gap: 6px;">
@@ -396,23 +409,26 @@ const template = html`+"`"+`
       </div>
     `+"`"+` : ''}
 
-    ${() => state.issues.length === 0 ? html`+"`"+`
+    ${() => (state.issues || []).length === 0 ? html`+"`"+`
       <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px;">
         <div style="font-size: 24px;">✨</div>
         <div style="font-size: 15px; font-weight: 700; color: #34d399;">ALL CLUSTERS HEALTHY — 0 ACTIVE INCIDENTS</div>
         <div style="font-size: 12px; color: #cbd5e1; max-width: 420px;">All Kubernetes workloads across production, staging, and analytics clusters are Running nominally.</div>
-        <div style="display: flex; gap: 8px; margin-top: 6px;">
-          <button @click="${() => triggerScenario('inject redis oom cascade')}" style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
+        <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px;">
+          <button @click="${() => triggerScenario('redis-oom')}" style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
             🔥 Inject Redis OOM Cascade
           </button>
-          <button @click="${() => triggerScenario('simulate black friday traffic spike')}" style="background: rgba(251, 191, 36, 0.2); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.45); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
+          <button @click="${() => triggerScenario('traffic-spike')}" style="background: rgba(251, 191, 36, 0.2); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.45); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
             📈 Simulate Traffic Spike
+          </button>
+          <button @click="${() => triggerScenario('default')}" style="background: rgba(56, 189, 248, 0.2); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
+            💥 Restore Payment Crash
           </button>
         </div>
       </div>
     `+"`"+` : html`+"`"+`
       <div style="display: flex; flex-direction: column; gap: 10px;">
-        ${() => state.issues.map(pod => html`+"`"+`
+        ${() => (state.issues || []).map(pod => html`+"`"+`
           <div style="background: rgba(15, 23, 42, 0.78); border: 1px solid rgba(239, 68, 68, 0.32); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; align-items: center; justify-content: space-between;">
               <div style="display: flex; align-items: center; gap: 8px;">
@@ -437,6 +453,9 @@ const template = html`+"`"+`
                 </button>
                 <button @click="${() => viewLogs(pod.name)}" style="background: rgba(30, 41, 59, 0.9); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">
                   📜 Logs
+                </button>
+                <button @click="${() => fixNow(pod.name)}" style="background: linear-gradient(135deg, #059669, #10b981); color: #ffffff; border: none; border-radius: 6px; padding: 5px 11px; font-size: 11px; font-weight: 700; cursor: pointer;">
+                  🛠️ Fix Now
                 </button>
                 <button @click="${() => triagePod(pod.name)}" style="background: linear-gradient(135deg, #0284c7, #2563eb); color: #ffffff; border: none; border-radius: 6px; padding: 5px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
                   ⚡ Deep Triage
@@ -466,7 +485,7 @@ func synthesizeNamespaceListUI(namespace string, topology *api.TopologyData) str
 	if namespace == "" {
 		namespace = "production"
 	}
-	var pods []uiNamespacePod
+	pods := make([]uiNamespacePod, 0)
 	if topology != nil {
 		for _, cluster := range topology.Clusters {
 			for _, ns := range cluster.Namespaces {
@@ -502,7 +521,7 @@ func synthesizeNamespaceListUI(namespace string, topology *api.TopologyData) str
 
 	return fmt.Sprintf(`const state = reactive({
   namespace: %q,
-  pods: %s
+  pods: %s || []
 });
 
 function focusPod(name) {
@@ -575,7 +594,7 @@ func parseMillicores(cpu string) int {
 
 // synthesizeResourceLeaderboardUI generates a reactive ArrowJS Cluster Resource Saturation Leaderboard bound to live topology.
 func synthesizeResourceLeaderboardUI(topology *api.TopologyData) string {
-	var list []uiLeaderPod
+	list := make([]uiLeaderPod, 0)
 	if topology != nil {
 		for _, cluster := range topology.Clusters {
 			for _, ns := range cluster.Namespaces {
@@ -611,7 +630,7 @@ func synthesizeResourceLeaderboardUI(topology *api.TopologyData) string {
 
 	return fmt.Sprintf(`const state = reactive({
   sortBy: 'CPU',
-  workloads: %s
+  workloads: %s || []
 });
 
 function focusWorkload(name) {

@@ -93,7 +93,7 @@ func (l *LookoutClient) RunLookoutCheck(ctx context.Context, toolName string, to
 }
 
 func synthesizeFindingsFromState(topology *api.TopologyData, targetPod string) ([]api.LookoutFinding, int) {
-	var findings []api.LookoutFinding
+	findings := make([]api.LookoutFinding, 0)
 	scanned := 0
 
 	if topology != nil {
