@@ -52,3 +52,25 @@ flowchart TD
     MastHarness -- "6. Compiled ArrowJS + Lookout Findings + Reasoning" --> WSHub
     WSHub -- "7. Broadcast MsgTypeTopology & MsgTypeUIComponent" --> Browser
 ```
+
+---
+
+## 3. Protocol & Schema Definitions
+
+### 3.1 WebSocket Client Messages (`pkg/api/types.go`)
+- `MsgTypeRemediate` (`"remediate"`): Mutates a failing/pending workload to `Running`, clears its `k8s-lookout` findings, appends a remediation audit log, and broadcasts updated topology.
+- `MsgTypeScenario` (`"scenario"`): Applies one of the 4 chaos scenarios (`default`, `redis-oom`, `traffic-spike`, `healthy`) and broadcasts updated topology.
+
+### 3.2 `k8s-lookout` Finding Schema (`LookoutFinding`)
+Matches `k8s-lookout`'s frozen v1 signal contract:
+```json
+{
+  "kind": "oom_killed",
+  "severity": "critical",
+  "fingerprint": "lk8s-6d9a2f1c",
+  "resource": "pod/redis-cart",
+  "namespace": "production",
+  "summary": "Container redis-server terminated with exit code 137 (OOMKilled: anon-rss=4190MB / limit=4096MB)",
+  "check_source": "lookout_triage"
+}
+```

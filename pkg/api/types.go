@@ -26,14 +26,20 @@ const (
 	MsgTypeSelectNode ClientMessageType = "select_node"
 	// MsgTypePrompt submits an SRE natural language triage prompt.
 	MsgTypePrompt ClientMessageType = "prompt"
+	// MsgTypeRemediate executes a stateful remediation action on a target workload.
+	MsgTypeRemediate ClientMessageType = "remediate"
+	// MsgTypeScenario switches the active cluster chaos incident scenario.
+	MsgTypeScenario ClientMessageType = "scenario"
 )
 
 // ClientMessage is sent from the browser client over WebSocket.
 type ClientMessage struct {
-	Type           ClientMessageType `json:"type"`
-	SelectedNodeID string            `json:"selected_node_id,omitempty"`
-	ResourceURI    string            `json:"resource_uri,omitempty"`
-	Prompt         string            `json:"prompt,omitempty"`
+	Type              ClientMessageType `json:"type"`
+	SelectedNodeID    string            `json:"selected_node_id,omitempty"`
+	ResourceURI       string            `json:"resource_uri,omitempty"`
+	Prompt            string            `json:"prompt,omitempty"`
+	ScenarioID        string            `json:"scenario_id,omitempty"`
+	RemediationAction string            `json:"remediation_action,omitempty"`
 }
 
 // ServerMessageType represents messages pushed to the browser client.
@@ -100,7 +106,8 @@ type ClusterNode struct {
 
 // TopologyData contains the full cluster hierarchy.
 type TopologyData struct {
-	Clusters []ClusterNode `json:"clusters"`
+	ScenarioID string        `json:"scenario_id,omitempty"`
+	Clusters   []ClusterNode `json:"clusters"`
 }
 
 // LogEntry represents an individual log line with severity and timestamp.
@@ -111,13 +118,26 @@ type LogEntry struct {
 	Source    string `json:"source"`
 }
 
-// TelemetryData contains metrics and logs for an active resource.
+// LookoutFinding represents a token-dense, secret-sanitized diagnostic finding from go-steer/k8s-lookout.
+type LookoutFinding struct {
+	Kind        string `json:"kind"`         // e.g. "crashloopbackoff", "oom_killed", "quota_exceeded", "upstream_503"
+	Severity    string `json:"severity"`     // "critical", "warning", "info"
+	Fingerprint string `json:"fingerprint"`  // e.g. "lk8s-9f8a32b1"
+	Resource    string `json:"resource"`     // e.g. "pod/payment-service"
+	Namespace   string `json:"namespace"`    // e.g. "production"
+	Summary     string `json:"summary"`      // Secret-sanitized finding summary
+	CheckSource string `json:"check_source"` // e.g. "lookout_triage", "lookout_events", "lookout_top"
+}
+
+// TelemetryData contains metrics, logs, and k8s-lookout diagnostic findings for an active resource.
 type TelemetryData struct {
-	ResourceURI string            `json:"resource_uri"`
-	PodID       string            `json:"pod_id"`
-	Metrics     map[string]string `json:"metrics"`
-	Logs        []LogEntry        `json:"logs"`
-	Topology    *TopologyData     `json:"topology,omitempty"`
+	ResourceURI     string            `json:"resource_uri"`
+	PodID           string            `json:"pod_id"`
+	Metrics         map[string]string `json:"metrics"`
+	Logs            []LogEntry        `json:"logs"`
+	LookoutFindings []LookoutFinding  `json:"lookout_findings,omitempty"`
+	LookoutEnvelope string            `json:"lookout_envelope,omitempty"`
+	Topology        *TopologyData     `json:"topology,omitempty"`
 }
 
 // UIComponentData contains compiled ArrowJS template code and bound telemetry.

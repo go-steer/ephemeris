@@ -40,16 +40,18 @@ type LLMIntentResult struct {
 	Archetype       UIArchetype `json:"archetype"`
 	TargetPod       string      `json:"target_pod"`
 	TargetNamespace string      `json:"target_namespace"`
+	TargetScenario  string      `json:"target_scenario"`
 	Reasoning       string      `json:"reasoning"`
 }
 
-// Agent coordinates prompt synthesis and ArrowJS code generation via Gemini.
+// Agent coordinates prompt synthesis and ArrowJS code generation via Gemini and MastHarness.
 type Agent struct {
 	cfg         AgentConfig
 	genaiClient *genai.Client
+	mastHarness *MastHarness
 }
 
-// NewAgent creates a new Agent configured for Vertex AI with ADC.
+// NewAgent creates a new Agent configured for Vertex AI with ADC and MastHarness.
 func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 	if cfg.Model == "" {
 		cfg.Model = "gemini-3.8-flash"
@@ -61,7 +63,10 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 		cfg.Location = "global"
 	}
 
-	agent := &Agent{cfg: cfg}
+	agent := &Agent{
+		cfg:         cfg,
+		mastHarness: NewMastHarness(nil),
+	}
 
 	if cfg.ForceMock {
 		log.Printf("Agent initialized in mock fallback mode (ForceMock=true)")
@@ -84,7 +89,7 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 	return agent
 }
 
-// ResolveIntent uses Gemini on Vertex AI to translate any natural-language prompt into a structured UIArchetype and target resource.
+// ResolveIntent uses Gemini on Vertex AI via MastHarness to translate any natural-language prompt into a structured UIArchetype and target resource.
 func (a *Agent) ResolveIntent(ctx context.Context, userPrompt string, telemetry *api.TelemetryData, onStatus func(string)) LLMIntentResult {
 	fallbackArch, fallbackNS := classifyPromptArchetype(userPrompt, telemetry)
 	fallbackResult := LLMIntentResult{
@@ -92,30 +97,35 @@ func (a *Agent) ResolveIntent(ctx context.Context, userPrompt string, telemetry 
 		TargetNamespace: fallbackNS,
 		Reasoning:       "Deterministic rule-based intent classification",
 	}
+	if fallbackArch == ArchetypeChaosScenario {
+		fallbackResult.TargetScenario = fallbackNS
+	}
 
 	if a.genaiClient == nil || a.cfg.ForceMock {
 		return fallbackResult
 	}
 
 	if onStatus != nil {
-		onStatus("🤖 Gemini LLM: Translating natural-language prompt intent...")
+		onStatus("🤖 [mast:intent-router] Routing natural-language prompt via gemini-3.8-flash (global)...")
 	}
 
 	intentPrompt := fmt.Sprintf(`You are the Ephemeris Spatial Observability Intent Router for Google Kubernetes Engine (GKE).
 Translate the user's natural-language prompt into a JSON object matching this exact schema:
 {
-  "archetype": "logs_console" | "issues_matrix" | "namespace_inventory" | "resource_leaderboard" | "deep_triage",
+  "archetype": "logs_console" | "issues_matrix" | "namespace_inventory" | "resource_leaderboard" | "deep_triage" | "chaos_scenario",
   "target_pod": string (one of: "payment-service", "cart-service", "checkout-service", "batch-ingestor", "frontend", "redis-cart", or "" if fleet/namespace-wide),
-  "target_namespace": string (one of: "default", "checkout", "data-pipeline", "payments", "monitoring", or "all"),
+  "target_namespace": string (one of: "default", "production", "staging", "spark-jobs", "checkout", "data-pipeline", "payments", "monitoring", or "all"),
+  "target_scenario": string (one of: "redis-oom", "traffic-spike", "healthy", "default", or "" unless archetype is chaos_scenario),
   "reasoning": string (brief 1-sentence explanation of why this UI archetype and target were chosen)
 }
 
 Rules:
+- Choose "chaos_scenario" if the user asks to inject, simulate, or trigger a failure scenario (e.g. "inject redis oom cascade" -> target_scenario="redis-oom", "simulate black friday traffic spike" -> target_scenario="traffic-spike", "reset all clusters to healthy" -> target_scenario="healthy").
 - Choose "issues_matrix" if the user asks which pods have issues, what is failing/broken/crashing, show anomalies, or list alerts across clusters without naming a single specific pod.
 - Choose "logs_console" if the user asks to see/tail/stream logs or stdout/stderr for a workload.
-- Choose "namespace_inventory" if the user asks to list or show all pods/workloads in a namespace (e.g. default, checkout, data-pipeline).
+- Choose "namespace_inventory" if the user asks to list or show all pods/workloads in a namespace (e.g. production, default, spark-jobs).
 - Choose "resource_leaderboard" if the user asks to compare CPU/memory usage, top resource consumers, or saturation rankings.
-- Choose "deep_triage" if the user asks to triage, fix, rollback, or diagnose why a specific single pod (e.g. payment-service) is crashing or pending.
+- Choose "deep_triage" if the user asks to triage, fix, rollback, or diagnose why a specific single pod (e.g. payment-service or redis-cart) is crashing or pending.
 
 User Prompt: %q`, userPrompt)
 
@@ -135,9 +145,12 @@ User Prompt: %q`, userPrompt)
 			var parsed LLMIntentResult
 			if err := json.Unmarshal([]byte(rawJSON.String()), &parsed); err == nil && parsed.Archetype != "" {
 				a.cfg.Model = modelName
-				log.Printf("Gemini Intent Router [%s]: prompt=%q -> archetype=%s, pod=%s, ns=%s (%s)", modelName, userPrompt, parsed.Archetype, parsed.TargetPod, parsed.TargetNamespace, parsed.Reasoning)
+				if a.mastHarness != nil {
+					a.mastHarness.RecordIntentStep(parsed, 120)
+				}
+				log.Printf("Gemini Intent Router [%s]: prompt=%q -> archetype=%s, pod=%s, ns=%s, scenario=%s (%s)", modelName, userPrompt, parsed.Archetype, parsed.TargetPod, parsed.TargetNamespace, parsed.TargetScenario, parsed.Reasoning)
 				if onStatus != nil && parsed.Reasoning != "" {
-					onStatus(fmt.Sprintf("🤖 Gemini Intent Router: %s", parsed.Reasoning))
+					onStatus(fmt.Sprintf("🤖 [mast:intent-router] %s", parsed.Reasoning))
 				}
 				return parsed
 			}
@@ -147,8 +160,8 @@ User Prompt: %q`, userPrompt)
 	return fallbackResult
 }
 
-// injectGeminiReasoning injects a live Vertex AI Gemini Intent Router insight banner into the synthesized ArrowJS component.
-func injectGeminiReasoning(code string, reasoning string, modelName string) string {
+// injectGeminiReasoning injects a live Vertex AI Gemini (mast harness) & k8s-lookout insight banner into the synthesized ArrowJS component.
+func injectGeminiReasoning(code string, reasoning string, modelName string, lookoutEnvelope string) string {
 	if reasoning == "" || reasoning == "Deterministic rule-based intent classification" {
 		return code
 	}
@@ -160,10 +173,15 @@ func injectGeminiReasoning(code string, reasoning string, modelName string) stri
 	safe = strings.ReplaceAll(safe, "<", "&lt;")
 	safe = strings.ReplaceAll(safe, ">", "&gt;")
 
+	envBadge := ""
+	if lookoutEnvelope != "" {
+		envBadge = fmt.Sprintf(` <span style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); padding: 1px 6px; border-radius: 4px; font-size: 10px; font-family: 'JetBrains Mono', monospace; margin-left: 6px;">k8s-lookout: %s</span>`, lookoutEnvelope)
+	}
+
 	banner := fmt.Sprintf(`<div style="display: flex; align-items: flex-start; gap: 8px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #e0f2fe; line-height: 1.4;">
       <span style="font-size: 14px; line-height: 1;">✨</span>
-      <div><strong style="color: #38bdf8; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.04em;">VERTEX AI %s INTENT ROUTER:</strong> %s</div>
-    </div>`, strings.ToUpper(modelName), safe)
+      <div><strong style="color: #38bdf8; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.04em;">VERTEX AI %s (MAST HARNESS):</strong> %s%s</div>
+    </div>`, strings.ToUpper(modelName), safe, envBadge)
 
 	target := `color: #f8fafc;">`
 	if idx := strings.Index(code, target); idx != -1 {
@@ -184,37 +202,57 @@ func (a *Agent) GenerateStream(ctx context.Context, userPrompt string, telemetry
 	return a.GenerateStreamWithIntent(ctx, userPrompt, intent, telemetry, onStatus)
 }
 
-// GenerateStreamWithIntent compiles an ephemeral ArrowJS component using a pre-resolved LLMIntentResult.
+// GenerateStreamWithIntent compiles an ephemeral ArrowJS component using a pre-resolved LLMIntentResult and k8s-lookout findings.
 func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string, intent LLMIntentResult, telemetry *api.TelemetryData, onStatus func(string)) (string, error) {
-	// Synthesize the verified polymorphic UI archetype and inject live Gemini LLM reasoning
+	var topo *api.TopologyData
+	if telemetry != nil {
+		topo = telemetry.Topology
+	}
+
+	var findings []api.LookoutFinding
+	var envelope string
+	if a.mastHarness != nil {
+		findings, envelope = a.mastHarness.RunLookoutSpecialist(ctx, intent, topo, telemetry, onStatus)
+		if telemetry != nil {
+			telemetry.LookoutFindings = findings
+			telemetry.LookoutEnvelope = envelope
+		}
+	}
+
+	var code string
 	switch intent.Archetype {
 	case ArchetypeIssuesFleetMatrix:
 		if onStatus != nil {
-			onStatus("Synthesizing Multi-Cluster Incident Fleet Matrix (ArrowJS)...")
+			onStatus("⚡ [mast:arrowjs-compiler] Synthesizing Multi-Cluster Incident Fleet Matrix (ArrowJS)...")
 		}
-		return injectGeminiReasoning(synthesizeIssuesListUI(), intent.Reasoning, a.cfg.Model), nil
+		code = synthesizeIssuesListUI(topo, findings, envelope)
 	case ArchetypeNamespaceInventory:
 		ns := intent.TargetNamespace
 		if ns == "" {
-			ns = "default"
+			ns = "production"
 		}
 		if onStatus != nil {
-			onStatus(fmt.Sprintf("Synthesizing Namespace Workload Inventory for %q (ArrowJS)...", ns))
+			onStatus(fmt.Sprintf("⚡ [mast:arrowjs-compiler] Synthesizing Namespace Workload Inventory for %q (ArrowJS)...", ns))
 		}
-		return injectGeminiReasoning(synthesizeNamespaceListUI(ns), intent.Reasoning, a.cfg.Model), nil
+		code = synthesizeNamespaceListUI(ns, topo)
 	case ArchetypeResourceLeaderboard:
 		if onStatus != nil {
-			onStatus("Synthesizing Cluster Resource Saturation Leaderboard (ArrowJS)...")
+			onStatus("⚡ [mast:arrowjs-compiler] Synthesizing Cluster Resource Saturation Leaderboard (ArrowJS)...")
 		}
-		return injectGeminiReasoning(synthesizeResourceLeaderboardUI(), intent.Reasoning, a.cfg.Model), nil
+		code = synthesizeResourceLeaderboardUI(topo)
 	case ArchetypeLogsConsole:
 		if onStatus != nil {
-			onStatus("Synthesizing Live Container Log Console (ArrowJS)...")
+			onStatus("⚡ [mast:arrowjs-compiler] Synthesizing Live Container Log Console (ArrowJS)...")
 		}
-		return injectGeminiReasoning(synthesizeLogsConsoleUI(), intent.Reasoning, a.cfg.Model), nil
+		code = synthesizeLogsConsoleUI(telemetry)
+	default:
+		code = a.generateFallbackStream(userPrompt, telemetry, onStatus)
 	}
 
-	return injectGeminiReasoning(a.generateFallbackStream(userPrompt, telemetry, onStatus), intent.Reasoning, a.cfg.Model), nil
+	if a.mastHarness != nil {
+		a.mastHarness.RecordCompilerStep(intent.Archetype, len(code), 6)
+	}
+	return injectGeminiReasoning(code, intent.Reasoning, a.cfg.Model, envelope), nil
 }
 
 func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryData, onStatus func(string)) string {
@@ -227,16 +265,16 @@ func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryDa
 	if onStatus != nil {
 		switch archetype {
 		case ArchetypeLogsConsole:
-			onStatus(fmt.Sprintf("Executing MCP tool: query_logs(resource='%s', limit=50)...", podID))
+			onStatus(fmt.Sprintf("Executing MCP tool: lookout_logs(resource='%s', limit=50)...", podID))
 		case ArchetypeIssuesFleetMatrix:
-			onStatus("Executing MCP tool: filter_pods(status=['CrashLoopBackOff', 'Pending', 'Failed'])...")
+			onStatus("Executing MCP tool: lookout_findings(status=['CrashLoopBackOff', 'Pending'])...")
 		case ArchetypeNamespaceInventory:
 			if targetNS == "" {
-				targetNS = "default"
+				targetNS = "production"
 			}
-			onStatus(fmt.Sprintf("Executing MCP tool: list_pods(namespace='%s')...", targetNS))
+			onStatus(fmt.Sprintf("Executing MCP tool: lookout_state(namespace='%s')...", targetNS))
 		case ArchetypeResourceLeaderboard:
-			onStatus("Executing MCP tool: top_pods(sort_by='memory_saturation')...")
+			onStatus("Executing MCP tool: lookout_top(sort_by='cpu_saturation')...")
 		default:
 			status := "Running"
 			if telemetry != nil && telemetry.Metrics != nil {
@@ -246,9 +284,9 @@ func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryDa
 			}
 			switch status {
 			case "CrashLoopBackOff", "Failed":
-				onStatus("Analyzing container panic trace (SIGSEGV at server.go:142)...")
+				onStatus("Analyzing container panic trace via lookout_triage...")
 			case "Pending":
-				onStatus("Evaluating node pool resource limits & scheduling constraints...")
+				onStatus("Evaluating node pool resource limits & scheduling constraints via lookout_events...")
 			default:
 				onStatus("Synthesizing healthy cluster observability cockpit...")
 			}
@@ -259,16 +297,24 @@ func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryDa
 }
 
 func (a *Agent) generateFallback(prompt string, telemetry *api.TelemetryData) string {
+	var topo *api.TopologyData
+	var findings []api.LookoutFinding
+	var envelope string
+	if telemetry != nil {
+		topo = telemetry.Topology
+		findings = telemetry.LookoutFindings
+		envelope = telemetry.LookoutEnvelope
+	}
 	archetype, targetNS := classifyPromptArchetype(prompt, telemetry)
 	switch archetype {
 	case ArchetypeLogsConsole:
-		return synthesizeLogsConsoleUI()
+		return synthesizeLogsConsoleUI(telemetry)
 	case ArchetypeIssuesFleetMatrix:
-		return synthesizeIssuesListUI()
+		return synthesizeIssuesListUI(topo, findings, envelope)
 	case ArchetypeNamespaceInventory:
-		return synthesizeNamespaceListUI(targetNS)
+		return synthesizeNamespaceListUI(targetNS, topo)
 	case ArchetypeResourceLeaderboard:
-		return synthesizeResourceLeaderboardUI()
+		return synthesizeResourceLeaderboardUI(topo)
 	}
 
 	status := "Running"

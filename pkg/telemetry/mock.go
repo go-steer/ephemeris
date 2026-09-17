@@ -18,33 +18,129 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-steer/ephemeris/pkg/api"
 )
 
 // MockProvider generates realistic container logs with timestamps and severities.
-type MockProvider struct{}
+type MockProvider struct {
+	mu             sync.RWMutex
+	activeScenario string
+	remediated     map[string]bool
+}
 
 // NewMockProvider creates a new mock telemetry provider.
 func NewMockProvider() *MockProvider {
-	return &MockProvider{}
+	return &MockProvider{
+		activeScenario: "default",
+		remediated:     make(map[string]bool),
+	}
 }
 
-// QueryLogs returns realistic container logs based on the requested resource URI.
+// SetScenario sets the active chaos incident scenario and clears remediation overrides.
+func (m *MockProvider) SetScenario(scenarioID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if scenarioID == "" {
+		scenarioID = "default"
+	}
+	m.activeScenario = scenarioID
+	m.remediated = make(map[string]bool)
+}
+
+// RecordRemediation marks a pod as remediated so subsequent log queries show recovery.
+func (m *MockProvider) RecordRemediation(podIDOrName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	target := strings.ToLower(strings.TrimSpace(podIDOrName))
+	m.remediated[target] = true
+	if strings.Contains(target, "redis") {
+		m.remediated["cart-service"] = true
+		m.remediated["checkout-service"] = true
+	}
+}
+
+func (m *MockProvider) isRemediated(resourceURI string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.activeScenario == "healthy" {
+		return true
+	}
+	lower := strings.ToLower(resourceURI)
+	for k, v := range m.remediated {
+		if v && strings.Contains(lower, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// QueryLogs returns realistic container logs based on the requested resource URI and active scenario.
 func (m *MockProvider) QueryLogs(_ context.Context, resourceURI string, limit int) (*api.TelemetryData, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 
-	if strings.Contains(resourceURI, "payment-service") {
+	if m.isRemediated(resourceURI) {
+		data := m.healthyServiceLogs(resourceURI, limit)
+		now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+		data.Logs = append(data.Logs, api.LogEntry{
+			Timestamp: now,
+			Severity:  "INFO",
+			Message:   "[REMEDIATION] Executed rollback to stable revision; readiness probe succeeded (200 OK, 0 errors)",
+			Source:    "kubelet",
+		})
+		return data, nil
+	}
+
+	m.mu.RLock()
+	scenario := m.activeScenario
+	m.mu.RUnlock()
+
+	if scenario == "redis-oom" && strings.Contains(resourceURI, "redis") {
+		return m.failingRedisOOMLogs(resourceURI, limit), nil
+	}
+	if scenario == "default" && strings.Contains(resourceURI, "payment-service") {
 		return m.failingPaymentLogs(resourceURI, limit), nil
 	}
-	if strings.Contains(resourceURI, "batch-ingestor") {
+	if scenario == "default" && strings.Contains(resourceURI, "batch-ingestor") {
 		return m.pendingBatchLogs(resourceURI, limit), nil
 	}
 
 	return m.healthyServiceLogs(resourceURI, limit), nil
+}
+
+func (m *MockProvider) failingRedisOOMLogs(resourceURI string, limit int) *api.TelemetryData {
+	now := time.Now().UTC()
+	t := func(offsetSeconds int) string {
+		return now.Add(time.Duration(-offsetSeconds) * time.Second).Format("2006-01-02T15:04:05.000Z")
+	}
+	rawLogs := []api.LogEntry{
+		{Timestamp: t(120), Severity: "INFO", Message: "Redis 7.2.4 (00000000/0) 64 bit, port 6379, maxmemory=4096mb (policy: noeviction)", Source: "redis-server"},
+		{Timestamp: t(80), Severity: "WARNING", Message: "Memory usage critical: used_memory_rss=4120MB (98.2% of container memory limit)", Source: "redis-server"},
+		{Timestamp: t(45), Severity: "ERROR", Message: "OOM command not allowed when used memory > 'maxmemory' (client: cart-service:58214)", Source: "redis-server"},
+		{Timestamp: t(20), Severity: "FATAL", Message: "kernel: Out of memory: Killed process 1 (redis-server), total-vm:4194304kB, anon-rss:4190120kB, OOMKilled", Source: "kernel-oom"},
+		{Timestamp: t(10), Severity: "ERROR", Message: "Container redis-server terminated with exit code 137 (OOMKilled)", Source: "kubelet"},
+		{Timestamp: t(3), Severity: "WARNING", Message: "Back-off restarting failed container redis-server in pod redis-cart-6d9a2_production (restarts=9)", Source: "kubelet"},
+	}
+	if len(rawLogs) > limit {
+		rawLogs = rawLogs[len(rawLogs)-limit:]
+	}
+	return &api.TelemetryData{
+		ResourceURI: resourceURI,
+		PodID:       "pod-redis-cart-6d9a2",
+		Metrics: map[string]string{
+			"status":    "CrashLoopBackOff",
+			"restarts":  "9",
+			"cpu":       "960m",
+			"memory":    "4.0Gi",
+			"oom_kills": "9",
+			"exit_code": "137",
+		},
+		Logs: rawLogs,
+	}
 }
 
 func (m *MockProvider) failingPaymentLogs(resourceURI string, limit int) *api.TelemetryData {

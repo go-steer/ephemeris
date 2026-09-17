@@ -30,6 +30,7 @@ export class HUDOverlay {
     this.onResetView = null;
     this.onResetIncident = null;
     this.onClusterSelect = null;
+    this.onScenarioSelect = null;
     this.onClearSelection = null;
 
     this._createDOM();
@@ -52,6 +53,15 @@ export class HUDOverlay {
             <span class="cluster-select-icon">&#x1F310;</span>
             <select id="hud-cluster-select" class="cluster-select-dropdown" aria-label="Select GKE Cluster">
               <option value="production-us-central1">production-us-central1 [us-central1] (1 Alert)</option>
+            </select>
+          </div>
+          <div class="cluster-select-wrapper scenario-select-wrapper">
+            <span class="cluster-select-icon">⚡</span>
+            <select id="hud-scenario-select" class="cluster-select-dropdown scenario-select-dropdown" aria-label="Inject Chaos Scenario" title="Inject Cloud Infrastructure Chaos Scenario">
+              <option value="default">Scenario: Baseline (Payment Crash)</option>
+              <option value="redis-oom">🔥 Scenario: Redis OOM Cascade</option>
+              <option value="traffic-spike">📈 Scenario: Checkout Traffic Spike</option>
+              <option value="healthy">🟢 Scenario: All Healthy (0 Issues)</option>
             </select>
           </div>
           <div class="stats-counters">
@@ -212,6 +222,15 @@ export class HUDOverlay {
       });
     }
 
+    const scenarioSelect = this.container.querySelector('#hud-scenario-select');
+    if (scenarioSelect) {
+      scenarioSelect.addEventListener('change', (e) => {
+        if (this.onScenarioSelect) {
+          this.onScenarioSelect(e.target.value);
+        }
+      });
+    }
+
     const chipBtns = this.container.querySelectorAll('.chip-btn');
     chipBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -219,6 +238,13 @@ export class HUDOverlay {
         submitPrompt(query);
       });
     });
+  }
+
+  setScenario(scenarioId = 'default') {
+    const select = this.container.querySelector('#hud-scenario-select');
+    if (select && scenarioId) {
+      select.value = scenarioId;
+    }
   }
 
   setClusters(clusters = [], activeClusterName = '') {

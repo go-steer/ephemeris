@@ -63,8 +63,156 @@ func (m *MockProvider) GetPodDetails(_ context.Context, resourceURI string) (*ap
 	return nil, fmt.Errorf("pod not found for resource URI: %q", resourceURI)
 }
 
+// RemediatePod transitions a failing or pending workload to Running and resets its error counters.
+func (m *MockProvider) RemediatePod(_ context.Context, podIDOrName string, _ string) (*api.PodNode, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	target := strings.ToLower(strings.TrimSpace(podIDOrName))
+	var remediated *api.PodNode
+
+	for cIdx := range m.topology.Clusters {
+		for nIdx := range m.topology.Clusters[cIdx].Namespaces {
+			for pIdx := range m.topology.Clusters[cIdx].Namespaces[nIdx].Pods {
+				pod := &m.topology.Clusters[cIdx].Namespaces[nIdx].Pods[pIdx]
+				if strings.ToLower(pod.ID) == target || strings.ToLower(pod.Name) == target || strings.Contains(strings.ToLower(pod.ID), target) || strings.Contains(target, strings.ToLower(pod.Name)) {
+					pod.Status = api.StatusRunning
+					pod.Restarts = 0
+					pod.CPUUsage = "140m"
+					pod.MemoryUsage = "240Mi"
+					copied := *pod
+					remediated = &copied
+				}
+			}
+		}
+	}
+
+	// If remediating redis-cart during redis-oom cascade, also recover downstream cart-service and checkout-service
+	if remediated != nil && strings.Contains(remediated.Name, "redis") && m.topology.ScenarioID == "redis-oom" {
+		for cIdx := range m.topology.Clusters {
+			for nIdx := range m.topology.Clusters[cIdx].Namespaces {
+				for pIdx := range m.topology.Clusters[cIdx].Namespaces[nIdx].Pods {
+					pod := &m.topology.Clusters[cIdx].Namespaces[nIdx].Pods[pIdx]
+					if pod.Name == "cart-service" || pod.Name == "checkout-service" {
+						pod.Status = api.StatusRunning
+						pod.Restarts = 0
+						pod.CPUUsage = "160m"
+						pod.MemoryUsage = "280Mi"
+					}
+				}
+			}
+		}
+	}
+
+	if remediated == nil {
+		return nil, fmt.Errorf("workload %q not found for remediation", podIDOrName)
+	}
+	return remediated, nil
+}
+
+// ApplyScenario mutates the cluster topology to simulate multi-pod cloud incident scenarios.
+func (m *MockProvider) ApplyScenario(_ context.Context, scenarioID string) (*api.TopologyData, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if scenarioID == "" {
+		scenarioID = "default"
+	}
+	topo := buildDefaultMockTopology()
+	topo.ScenarioID = scenarioID
+
+	switch scenarioID {
+	case "redis-oom":
+		for cIdx := range topo.Clusters {
+			for nIdx := range topo.Clusters[cIdx].Namespaces {
+				for pIdx := range topo.Clusters[cIdx].Namespaces[nIdx].Pods {
+					pod := &topo.Clusters[cIdx].Namespaces[nIdx].Pods[pIdx]
+					switch pod.Name {
+					case "redis-cart":
+						pod.Status = api.StatusError
+						pod.Restarts = 9
+						pod.CPUUsage = "960m"
+						pod.MemoryUsage = "4.0Gi"
+					case "cart-service":
+						pod.Status = api.StatusError
+						pod.Restarts = 4
+						pod.CPUUsage = "340m"
+						pod.MemoryUsage = "420Mi"
+					case "checkout-service":
+						pod.Status = api.StatusPending
+						pod.Restarts = 2
+						pod.CPUUsage = "520m"
+						pod.MemoryUsage = "680Mi"
+					case "payment-service", "batch-ingestor":
+						pod.Status = api.StatusRunning
+						pod.Restarts = 0
+						pod.CPUUsage = "150m"
+						pod.MemoryUsage = "260Mi"
+					}
+				}
+			}
+		}
+	case "traffic-spike":
+		for cIdx := range topo.Clusters {
+			for nIdx := range topo.Clusters[cIdx].Namespaces {
+				ns := &topo.Clusters[cIdx].Namespaces[nIdx]
+				for pIdx := range ns.Pods {
+					pod := &ns.Pods[pIdx]
+					switch pod.Name {
+					case "frontend":
+						pod.Status = api.StatusRunning
+						pod.CPUUsage = "980m"
+						pod.MemoryUsage = "1.4Gi"
+					case "checkout-service":
+						pod.Status = api.StatusRunning
+						pod.CPUUsage = "940m"
+						pod.MemoryUsage = "1.6Gi"
+					case "payment-service", "batch-ingestor":
+						pod.Status = api.StatusRunning
+						pod.Restarts = 0
+						pod.CPUUsage = "180m"
+						pod.MemoryUsage = "310Mi"
+					}
+				}
+				if ns.Name == "production" {
+					ns.Pods = append(ns.Pods, api.PodNode{
+						ID:           "pod-checkout-scale-2",
+						Name:         "checkout-service-scale-2",
+						Namespace:    "production",
+						Cluster:      "production-us-central1",
+						Status:       api.StatusPending,
+						Restarts:     0,
+						CPUUsage:     "0m",
+						MemoryUsage:  "0Mi",
+						Dependencies: []string{"pod-payment-service-84f7b6"},
+						Labels:       map[string]string{"app": "checkout-service", "tier": "backend", "autoscaled": "true"},
+					})
+				}
+			}
+		}
+	case "healthy":
+		for cIdx := range topo.Clusters {
+			for nIdx := range topo.Clusters[cIdx].Namespaces {
+				for pIdx := range topo.Clusters[cIdx].Namespaces[nIdx].Pods {
+					pod := &topo.Clusters[cIdx].Namespaces[nIdx].Pods[pIdx]
+					pod.Status = api.StatusRunning
+					pod.Restarts = 0
+					if pod.CPUUsage == "0m" || pod.CPUUsage == "980m" {
+						pod.CPUUsage = "145m"
+						pod.MemoryUsage = "250Mi"
+					}
+				}
+			}
+		}
+	}
+
+	m.topology = topo
+	return m.topology, nil
+}
+
 func buildDefaultMockTopology() *api.TopologyData {
 	return &api.TopologyData{
+		ScenarioID: "default",
 		Clusters: []api.ClusterNode{
 			{
 				Name:      "production-us-central1",
@@ -90,16 +238,30 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Labels: map[string]string{"app": "frontend", "tier": "web"},
 							},
 							{
-								ID:           "pod-cart-service-5f8c2",
-								Name:         "cart-service",
+								ID:          "pod-cart-service-5f8c2",
+								Name:        "cart-service",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      api.StatusRunning,
+								Restarts:    1,
+								CPUUsage:    "80m",
+								MemoryUsage: "180Mi",
+								Dependencies: []string{
+									"pod-redis-cart-6d9a2",
+								},
+								Labels: map[string]string{"app": "cart-service", "tier": "backend"},
+							},
+							{
+								ID:           "pod-redis-cart-6d9a2",
+								Name:         "redis-cart",
 								Namespace:    "production",
 								Cluster:      "production-us-central1",
 								Status:       api.StatusRunning,
-								Restarts:     1,
-								CPUUsage:     "80m",
-								MemoryUsage:  "180Mi",
+								Restarts:     0,
+								CPUUsage:     "95m",
+								MemoryUsage:  "512Mi",
 								Dependencies: nil,
-								Labels:       map[string]string{"app": "cart-service", "tier": "backend"},
+								Labels:       map[string]string{"app": "redis-cart", "tier": "cache"},
 							},
 							{
 								ID:          "pod-checkout-service-9a1b3",

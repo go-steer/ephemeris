@@ -28,4 +28,10 @@ type Provider interface {
 
 	// GetPodDetails retrieves details for a specific pod by its resource URI.
 	GetPodDetails(ctx context.Context, resourceURI string) (*api.PodNode, error)
+
+	// RemediatePod transitions a failing/pending pod to Running and records the remediation action.
+	RemediatePod(ctx context.Context, podIDOrName string, action string) (*api.PodNode, error)
+
+	// ApplyScenario switches the cluster topology to a predefined chaos scenario ("default", "redis-oom", "traffic-spike", "healthy").
+	ApplyScenario(ctx context.Context, scenarioID string) (*api.TopologyData, error)
 }

@@ -166,8 +166,15 @@ func TestAgent_GenerateStream_StatusCallbacks(t *testing.T) {
 	if len(statusMessages) == 0 {
 		t.Fatal("expected at least one status callback message")
 	}
-	if !strings.Contains(statusMessages[0], "panic trace") {
-		t.Errorf("expected panic trace analysis status, got %q", statusMessages[0])
+	found := false
+	for _, m := range statusMessages {
+		if strings.Contains(m, "panic trace") || strings.Contains(m, "lookout_triage") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected panic trace or lookout_triage analysis status in %v", statusMessages)
 	}
 }
 

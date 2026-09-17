@@ -15,6 +15,10 @@
 package orchestrator
 
 import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-steer/ephemeris/pkg/api"
@@ -29,6 +33,7 @@ const (
 	ArchetypeNamespaceInventory  UIArchetype = "namespace_inventory"
 	ArchetypeResourceLeaderboard UIArchetype = "resource_leaderboard"
 	ArchetypeDeepTriageCockpit   UIArchetype = "deep_triage"
+	ArchetypeChaosScenario       UIArchetype = "chaos_scenario"
 )
 
 // classifyPromptArchetype inspects the user prompt and target resource URI to select the UI archetype.
@@ -37,6 +42,20 @@ func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArc
 	uri := ""
 	if telemetry != nil {
 		uri = strings.ToLower(telemetry.ResourceURI)
+	}
+
+	// 0. Chaos Scenario Injection requests ("inject redis oom", "simulate traffic spike", "reset all clusters to healthy")
+	if strings.Contains(p, "inject ") || strings.Contains(p, "simulate ") || strings.Contains(p, "redis oom") || strings.Contains(p, "oom cascade") || strings.Contains(p, "black friday") || strings.Contains(p, "traffic spike") || strings.Contains(p, "reset to healthy") || strings.Contains(p, "all healthy") {
+		if strings.Contains(p, "redis") || strings.Contains(p, "oom") {
+			return ArchetypeChaosScenario, "redis-oom"
+		}
+		if strings.Contains(p, "traffic") || strings.Contains(p, "black friday") || strings.Contains(p, "spike") {
+			return ArchetypeChaosScenario, "traffic-spike"
+		}
+		if strings.Contains(p, "healthy") || strings.Contains(p, "clear") || strings.Contains(p, "nominal") {
+			return ArchetypeChaosScenario, "healthy"
+		}
+		return ArchetypeChaosScenario, "default"
 	}
 
 	// 1. Explicit Log Console requests ("show me the logs for XXX", "tail logs", "error logs")
@@ -64,7 +83,6 @@ func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArc
 		return ArchetypeNamespaceInventory, ns
 	}
 
-	// 5. Default to Deep Single-Pod Incident Triage & Remediation Cockpit
 	return ArchetypeDeepTriageCockpit, ""
 }
 
@@ -72,561 +90,571 @@ func isFleetIssuesIntent(p string, uri string) bool {
 	if uri == "gke://fleet/issues" {
 		return true
 	}
-
-	// If a specific single service is explicitly named (e.g. "payment-service", "cart-service"),
-	// and the user is asking about that specific service, keep it as single-pod triage.
-	explicitPods := []string{
-		"payment-service", "payment service",
-		"cart-service", "cart service",
-		"checkout-service", "checkout service",
-		"batch-ingestor", "batch ingestor",
-		"redis-cart", "spark-master", "spark-worker",
-	}
-	for _, ep := range explicitPods {
-		if strings.Contains(p, ep) {
+	specificWorkloads := []string{"payment", "batch", "frontend", "cart", "checkout", "redis"}
+	for _, w := range specificWorkloads {
+		if strings.Contains(p, w) {
 			return false
 		}
 	}
 
-	issueWords := []string{
-		"issue", "issues", "failing", "failed", "fail", "broken",
-		"crashing", "crash", "error", "errors", "problem", "problems",
-		"unhealthy", "degraded", "alert", "alerts", "down", "wrong", "anomal",
+	phrases := []string{
+		"pods with issues",
+		"pods have issues",
+		"which pods have",
+		"what pods have",
+		"which pods are",
+		"what pods are",
+		"failing pods",
+		"broken pods",
+		"unhealthy pods",
+		"crashing pods",
+		"active alerts",
+		"cluster issues",
+		"fleet issues",
+		"all issues",
+		"any issues",
+		"what is failing",
+		"what's failing",
+		"what is broken",
+		"what's broken",
+		"have issues",
+		"having issues",
+		"with errors",
+		"have errors",
+		"in error",
+		"anomalies",
+		"down right now",
 	}
-	pluralOrQueryWords := []string{
-		"pods", "workloads", "services", "containers",
-		"which", "what", "list", "show", "all", "any", "fleet", "cluster",
-	}
-
-	hasIssueWord := false
-	for _, iw := range issueWords {
-		if strings.Contains(p, iw) {
-			hasIssueWord = true
-			break
-		}
-	}
-	if !hasIssueWord {
-		return false
-	}
-
-	for _, qw := range pluralOrQueryWords {
-		if strings.Contains(p, qw) {
+	for _, phrase := range phrases {
+		if strings.Contains(p, phrase) {
 			return true
 		}
+	}
+	if (strings.Contains(p, "pod") || strings.Contains(p, "service") || strings.Contains(p, "workload")) &&
+		(strings.Contains(p, "issue") || strings.Contains(p, "error") || strings.Contains(p, "fail") || strings.Contains(p, "crash") || strings.Contains(p, "problem") || strings.Contains(p, "down")) {
+		return true
 	}
 	return false
 }
 
 func extractNamespaceFromPrompt(p string) string {
-	knownNamespaces := []string{"default", "payments", "checkout", "frontend", "cart", "data-pipeline", "monitoring", "production", "staging"}
-	for _, ns := range knownNamespaces {
+	namespaces := []string{"default", "production", "staging", "spark-jobs", "kube-system", "checkout", "data-pipeline", "payments", "monitoring"}
+	for _, ns := range namespaces {
 		if strings.Contains(p, ns) {
 			return ns
 		}
 	}
-	// Try extracting word after "in " or "namespace "
-	words := strings.Fields(p)
-	for i, w := range words {
-		if (w == "in" || w == "namespace") && i+1 < len(words) {
-			candidate := strings.Trim(words[i+1], ".,?!'\"")
-			if candidate != "the" && candidate != "all" {
-				return candidate
+	return "production"
+}
+
+type uiLogLine struct {
+	TS    string `json:"ts"`
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
+}
+
+// synthesizeLogsConsoleUI generates a reactive ArrowJS Live Container Log Console bound to real telemetry logs.
+func synthesizeLogsConsoleUI(telemetry *api.TelemetryData) string {
+	podName := "payment-service"
+	var lines []uiLogLine
+
+	if telemetry != nil {
+		if telemetry.PodID != "" {
+			podName = telemetry.PodID
+		}
+		for _, entry := range telemetry.Logs {
+			ts := entry.Timestamp
+			if len(ts) >= 19 {
+				ts = ts[11:19] + ".000"
 			}
-			if candidate == "the" && i+2 < len(words) {
-				return strings.Trim(words[i+2], ".,?!'\"")
+			lvl := entry.Severity
+			if lvl == "WARNING" {
+				lvl = "WARN"
+			}
+			lines = append(lines, uiLogLine{
+				TS:    ts,
+				Level: lvl,
+				Msg:   entry.Message,
+			})
+		}
+	}
+
+	if len(lines) == 0 {
+		lines = []uiLogLine{
+			{TS: "15:04:01.112", Level: "INFO", Msg: "Container runtime initialized; listening on service port"},
+			{TS: "15:04:02.405", Level: "INFO", Msg: "Health check probe /healthz -> 200 OK"},
+		}
+	}
+
+	logsJSON, _ := json.Marshal(lines)
+
+	return fmt.Sprintf(`const state = reactive({
+  podName: %q,
+  filterLevel: 'ALL',
+  searchQuery: '',
+  isPaused: false,
+  copiedIndex: -1,
+  logs: %s
+});
+
+function setLevel(lvl) {
+  state.filterLevel = lvl;
+}
+
+function togglePause() {
+  state.isPaused = !state.isPaused;
+}
+
+function focusWorkload() {
+  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', {
+    detail: { podId: state.podName },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+function copyLog(idx, msg) {
+  state.copiedIndex = idx;
+  setTimeout(() => { state.copiedIndex = -1; }, 1500);
+}
+
+const template = html`+"`"+`
+  <div style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
+    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.3);">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">Live Log Console</span>
+        <span style="font-size: 13px; font-weight: 600; color: #e2e8f0; font-family: 'JetBrains Mono', monospace;">${() => state.podName}</span>
+      </div>
+      <div style="display: flex; gap: 6px;">
+        <button @click="${togglePause}" style="background: rgba(30, 41, 59, 0.9); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer; font-weight: 600;">
+          ${() => state.isPaused ? '▶ Resume Stream' : '⏸ Pause Tail'}
+        </button>
+        <button @click="${focusWorkload}" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer; font-weight: 600;">
+          🎯 Focus 3D Pod
+        </button>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+      <div style="display: flex; gap: 4px; background: rgba(15, 23, 42, 0.6); padding: 4px; border-radius: 6px; border: 1px solid rgba(148, 163, 184, 0.18);">
+        <button @click="${() => setLevel('ALL')}" style="background: rgba(56, 189, 248, 0.18); color: #f8fafc; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">ALL</button>
+        <button @click="${() => setLevel('FATAL')}" style="background: rgba(239, 68, 68, 0.18); color: #fca5a5; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">FATAL</button>
+        <button @click="${() => setLevel('ERROR')}" style="background: rgba(248, 113, 113, 0.15); color: #f87171; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">ERROR</button>
+        <button @click="${() => setLevel('WARN')}" style="background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">WARN</button>
+        <button @click="${() => setLevel('INFO')}" style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">INFO</button>
+      </div>
+      <span style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">Filter: ${() => state.filterLevel}</span>
+    </div>
+
+    <div style="background: #050811; border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 8px; padding: 10px; max-height: 260px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
+      ${() => state.logs
+        .filter(l => state.filterLevel === 'ALL' || l.level === state.filterLevel)
+        .map((l, idx) => html`+"`"+`
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 5px 8px; border-radius: 4px; background: rgba(15, 23, 42, 0.75); border-left: 3px solid #38bdf8;">
+            <div style="display: flex; gap: 8px; word-break: break-all;">
+              <span style="color: #64748b; flex-shrink: 0;">${l.ts}</span>
+              <span style="font-weight: 700; flex-shrink: 0; color: #e2e8f0;">[${l.level}]</span>
+              <span style="color: #f1f5f9;">${l.msg}</span>
+            </div>
+            <button @click="${() => copyLog(idx, l.msg)}" style="background: transparent; color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer; flex-shrink: 0;">
+              ${() => state.copiedIndex === idx ? '✓ Copied' : 'Copy'}
+            </button>
+          </div>
+        `+"`"+`)}
+    </div>
+  </div>
+`+"`"+`;
+
+template(container);
+`, podName, string(logsJSON))
+}
+
+type uiIssuePod struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Cluster   string `json:"cluster"`
+	Status    string `json:"status"`
+	Restarts  int    `json:"restarts"`
+	Reason    string `json:"reason"`
+	Impact    string `json:"impact"`
+}
+
+// synthesizeIssuesListUI generates a reactive ArrowJS Multi-Cluster Incident Fleet Matrix bound to live topology and k8s-lookout findings.
+func synthesizeIssuesListUI(topology *api.TopologyData, findings []api.LookoutFinding, envelope string) string {
+	var issues []uiIssuePod
+
+	if topology != nil {
+		for _, cluster := range topology.Clusters {
+			for _, ns := range cluster.Namespaces {
+				for _, pod := range ns.Pods {
+					if pod.Status != api.StatusRunning {
+						reason := fmt.Sprintf("Pod in %s state (cpu=%s, mem=%s)", pod.Status, pod.CPUUsage, pod.MemoryUsage)
+						impact := "HIGH — Service Degradation"
+						switch {
+						case strings.Contains(pod.Name, "redis"):
+							reason = "OOMKilled (Exit Code 137) — Container memory exceeded 4.0Gi limit"
+							impact = "CRITICAL — Upstream Cache Cascade"
+						case strings.Contains(pod.Name, "cart"):
+							reason = "Downstream redis-cart:6379 connection refused (circuit breaker OPEN)"
+							impact = "CRITICAL — Cart Checkout Blocked"
+						case strings.Contains(pod.Name, "payment"):
+							reason = "SIGSEGV (Nil pointer dereference at server.go:142)"
+							impact = "CRITICAL — Payment Processing Down"
+						case pod.Status == api.StatusPending:
+							reason = "0/6 nodes available: Insufficient CPU; ClusterAutoscaler scaling up node pool"
+							impact = "WARNING — Scheduling Backlogged"
+						}
+						issues = append(issues, uiIssuePod{
+							ID:        pod.ID,
+							Name:      pod.Name,
+							Namespace: ns.Name,
+							Cluster:   cluster.Name,
+							Status:    string(pod.Status),
+							Restarts:  pod.Restarts,
+							Reason:    reason,
+							Impact:    impact,
+						})
+					}
+				}
 			}
 		}
 	}
-	return "all"
-}
 
-// synthesizeLogsConsoleUI generates Archetype 1: Dedicated Live Log Stream & RegEx Search Console.
-func synthesizeLogsConsoleUI() string {
-	return `
-const state = reactive({
-  levelFilter: 'ALL',
-  searchQuery: '',
-  autoTail: true,
-  copied: false
-});
-
-const getFilteredLogs = () => {
-  const logs = data.logs || [];
-  return logs.filter(entry => {
-    const matchesLevel = state.levelFilter === 'ALL' || entry.severity === state.levelFilter;
-    const q = state.searchQuery.trim().toLowerCase();
-    const matchesSearch = !q ||
-      (entry.message && entry.message.toLowerCase().includes(q)) ||
-      (entry.source && entry.source.toLowerCase().includes(q));
-    return matchesLevel && matchesSearch;
-  });
-};
-
-const countByLevel = (lvl) => {
-  const logs = data.logs || [];
-  if (lvl === 'ALL') return logs.length;
-  return logs.filter(l => l.severity === lvl).length;
-};
-
-const triggerTriagePivot = () => {
-  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
-    bubbles: true,
-    composed: true,
-    detail: {
-      prompt: 'Run AI root-cause triage and remediation for ' + (data.pod_id || 'pod'),
-      podId: data.pod_id || '',
-      resourceUri: data.resource_uri || ''
-    }
-  }));
-};
-
-const copyLogs = () => {
-  state.copied = true;
-  setTimeout(() => { state.copied = false; }, 1800);
-};
-
-const template = html` + "`" + `
-  <div class="ephemeris-widget">
-    <div class="widget-header">
-      <div class="header-main">
-        <span class="pod-title">${() => '📋 Live Log Console: ' + (data.pod_id || 'Workload')}</span>
-        <span class="${() => 'status-pill status-' + ((data.metrics && data.metrics.status) || 'Running').toLowerCase()}">
-          ${() => (data.metrics && data.metrics.status) || 'Running'}
-        </span>
-      </div>
-      <div class="header-meta">
-        <span>URI: ${() => data.resource_uri || 'gke://cluster/pod'}</span>
-        <button class="triage-pivot-btn" @click="${triggerTriagePivot}">
-          ⚡ Pivot to Root-Cause Triage
-        </button>
-      </div>
-    </div>
-
-    <div class="log-console-toolbar">
-      <div class="filter-pills">
-        <button class="${() => 'filter-pill ' + (state.levelFilter === 'ALL' ? 'active' : '')}" @click="${() => { state.levelFilter = 'ALL'; }}">
-          ALL (${() => countByLevel('ALL')})
-        </button>
-        <button class="${() => 'filter-pill fatal ' + (state.levelFilter === 'FATAL' ? 'active' : '')}" @click="${() => { state.levelFilter = 'FATAL'; }}">
-          FATAL (${() => countByLevel('FATAL')})
-        </button>
-        <button class="${() => 'filter-pill error ' + (state.levelFilter === 'ERROR' ? 'active' : '')}" @click="${() => { state.levelFilter = 'ERROR'; }}">
-          ERROR (${() => countByLevel('ERROR')})
-        </button>
-        <button class="${() => 'filter-pill warn ' + (state.levelFilter === 'WARNING' ? 'active' : '')}" @click="${() => { state.levelFilter = 'WARNING'; }}">
-          WARN (${() => countByLevel('WARNING')})
-        </button>
-        <button class="${() => 'filter-pill info ' + (state.levelFilter === 'INFO' ? 'active' : '')}" @click="${() => { state.levelFilter = 'INFO'; }}">
-          INFO (${() => countByLevel('INFO')})
-        </button>
-      </div>
-
-      <div class="log-search-row">
-        <input
-          type="text"
-          class="log-search-input"
-          placeholder="Filter logs by keyword, error code, or file:line..."
-          value="${() => state.searchQuery}"
-          @input="${(e) => { state.searchQuery = e.target.value; }}"
-        />
-        <button class="filter-pill" @click="${() => { state.autoTail = !state.autoTail; }}">
-          ${() => state.autoTail ? '⏸ Tail: LIVE' : '▶ Tail: PAUSED'}
-        </button>
-        <button class="filter-pill" @click="${copyLogs}">
-          ${() => state.copied ? '✓ Copied' : '📋 Copy'}
-        </button>
-      </div>
-    </div>
-
-    <div class="log-container console-tall">
-      ${() => {
-        const filtered = getFilteredLogs();
-        if (filtered.length === 0) {
-          return html` + "`" + `<div class="empty-logs">No log entries match filter "${() => state.levelFilter}" / "${() => state.searchQuery}"</div>` + "`" + `;
-        }
-        return filtered.map(entry => html` + "`" + `
-          <div class="${() => 'log-row severity-' + (entry.severity || 'INFO').toLowerCase()}">
-            <span class="log-time">${() => (entry.timestamp || '').slice(11, 23)}</span>
-            <span class="${() => 'log-sev sev-' + (entry.severity || 'INFO').toLowerCase()}">${() => entry.severity}</span>
-            <span class="log-src">[${() => entry.source || 'runtime'}]</span>
-            <span class="log-msg">${() => entry.message}</span>
-          </div>
-        ` + "`" + `);
-      }}
-    </div>
-  </div>
-` + "`" + `;
-
-template(container);
-`
-}
-
-// synthesizeIssuesListUI generates Archetype 2: Multi-Cluster Incident Fleet Matrix.
-func synthesizeIssuesListUI() string {
-	return `
-const state = reactive({
-  filterStatus: 'ALL',
-  selectedRow: ''
-});
-
-const getAllIssuePods = () => {
-  const results = [];
-  const topo = data.topology;
-  if (topo && Array.isArray(topo.clusters)) {
-    topo.clusters.forEach(cluster => {
-      (cluster.namespaces || []).forEach(ns => {
-        (ns.pods || []).forEach(pod => {
-          if (pod.status !== 'Running') {
-            results.push({
-              id: pod.id || pod.name,
-              name: pod.name,
-              namespace: ns.name,
-              cluster: cluster.name,
-              status: pod.status,
-              restarts: pod.restarts || 0,
-              cpu: pod.cpu_usage || '980m',
-              memory: pod.memory_usage || '1.8Gi',
-              summary: pod.status === 'CrashLoopBackOff'
-                ? 'SIGSEGV panic: postgres connection pool exhausted (exit code 2)'
-                : '0/6 nodes available: Insufficient CPU & untolerated taint'
-            });
-          }
-        });
-      });
-    });
-  }
-  if (results.length === 0) {
-    return [
-      {
-        id: 'pod-payment-service',
-        name: 'payment-service',
-        namespace: 'default',
-        cluster: 'production-us-central1',
-        status: 'CrashLoopBackOff',
-        restarts: 14,
-        cpu: '980m',
-        memory: '1.8Gi',
-        summary: 'SIGSEGV panic: postgres connection pool exhausted (exit code 2)'
-      },
-      {
-        id: 'pod-batch-ingestor',
-        name: 'batch-ingestor',
-        namespace: 'data-pipeline',
-        cluster: 'staging-us-east1',
-        status: 'Pending',
-        restarts: 0,
-        cpu: '4000m (Req)',
-        memory: '8Gi (Req)',
-        summary: 'Unschedulable: Insufficient CPU capacity; autoscaler provisioning +2 nodes'
-      }
-    ];
-  }
-  return results.filter(p => state.filterStatus === 'ALL' || p.status === state.filterStatus);
-};
-
-const focusPod3D = (pod) => {
-  state.selectedRow = pod.name;
-  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', {
-    bubbles: true,
-    composed: true,
-    detail: {
-      podId: pod.name,
-      clusterName: pod.cluster,
-      namespaceName: pod.namespace
-    }
-  }));
-};
-
-const openPodLogs = (pod) => {
-  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
-    bubbles: true,
-    composed: true,
-    detail: {
-      prompt: 'Show me the logs for ' + pod.name,
-      podId: pod.name,
-      resourceUri: 'gke://' + pod.namespace + '/' + pod.name
-    }
-  }));
-};
-
-const openPodTriage = (pod) => {
-  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
-    bubbles: true,
-    composed: true,
-    detail: {
-      prompt: 'Run AI root-cause triage for ' + pod.name,
-      podId: pod.name,
-      resourceUri: 'gke://' + pod.namespace + '/' + pod.name
-    }
-  }));
-};
-
-const template = html` + "`" + `
-  <div class="ephemeris-widget">
-    <div class="widget-header">
-      <div class="header-main">
-        <span class="pod-title">🚨 Multi-Cluster Incident Fleet Matrix</span>
-        <span class="status-pill status-crashloopbackoff">
-          ${() => getAllIssuePods().length + ' Active Anomalies'}
-        </span>
-      </div>
-      <div class="header-meta">
-        <span>Scope: All GKE Clusters &bull; Click any row action to navigate 3D scene or inspect</span>
-      </div>
-    </div>
-
-    <div class="log-console-toolbar">
-      <div class="filter-pills">
-        <button class="${() => 'filter-pill ' + (state.filterStatus === 'ALL' ? 'active' : '')}" @click="${() => { state.filterStatus = 'ALL'; }}">
-          All Issues
-        </button>
-        <button class="${() => 'filter-pill fatal ' + (state.filterStatus === 'CrashLoopBackOff' ? 'active' : '')}" @click="${() => { state.filterStatus = 'CrashLoopBackOff'; }}">
-          CrashLoopBackOff
-        </button>
-        <button class="${() => 'filter-pill warn ' + (state.filterStatus === 'Pending' ? 'active' : '')}" @click="${() => { state.filterStatus = 'Pending'; }}">
-          Pending / Unschedulable
-        </button>
-      </div>
-    </div>
-
-    <div class="fleet-table-container">
-      ${() => getAllIssuePods().map(pod => html` + "`" + `
-        <div class="${() => 'fleet-card ' + (state.selectedRow === pod.name ? 'selected' : '')}">
-          <div class="fleet-card-top">
-            <div class="fleet-pod-ident">
-              <span class="${() => 'status-pill status-' + pod.status.toLowerCase()}">${() => pod.status}</span>
-              <strong class="fleet-pod-name">${() => pod.name}</strong>
-              <span class="fleet-pod-loc">${() => pod.cluster + ' / ' + pod.namespace}</span>
-            </div>
-            <div class="fleet-pod-actions">
-              <button class="focus-3d-btn" @click="${() => focusPod3D(pod)}">🎯 Focus 3D</button>
-              <button class="filter-pill" @click="${() => openPodLogs(pod)}">📋 Logs</button>
-              <button class="triage-pivot-btn" @click="${() => openPodTriage(pod)}">⚡ Triage</button>
-            </div>
-          </div>
-          <div class="fleet-pod-summary">${() => pod.summary}</div>
-          <div class="fleet-pod-metrics">
-            <span>Restarts: <strong>${() => pod.restarts}</strong></span>
-            <span>CPU: <strong>${() => pod.cpu}</strong></span>
-            <span>Memory: <strong>${() => pod.memory}</strong></span>
-          </div>
-        </div>
-      ` + "`" + `)}
-    </div>
-  </div>
-` + "`" + `;
-
-template(container);
-`
-}
-
-// synthesizeNamespaceListUI generates Archetype 3: Namespace Workload Inventory Explorer.
-func synthesizeNamespaceListUI(targetNamespace string) string {
-	if targetNamespace == "" {
-		targetNamespace = "default"
+	if envelope == "" {
+		envelope = fmt.Sprintf("scanned=12 findings=%d elapsed=9ms", len(findings))
 	}
-	return `
-const state = reactive({
-  nsFilter: ` + "`" + targetNamespace + "`" + `,
-  searchQuery: '',
-  selectedPod: ''
+
+	issuesJSON, _ := json.Marshal(issues)
+	findingsJSON, _ := json.Marshal(findings)
+
+	return fmt.Sprintf(`const state = reactive({
+  selectedFilter: 'ALL',
+  lookoutEnvelope: %q,
+  lookoutFindings: %s,
+  issues: %s
 });
 
-const getNamespacePods = () => {
-  const pods = [];
-  const topo = data.topology;
-  if (topo && Array.isArray(topo.clusters)) {
-    topo.clusters.forEach(cluster => {
-      (cluster.namespaces || []).forEach(ns => {
-        const matchesNS = state.nsFilter === 'all' ||
-          ns.name.toLowerCase().includes(state.nsFilter.toLowerCase());
-        if (matchesNS) {
-          (ns.pods || []).forEach(p => {
-            const q = state.searchQuery.trim().toLowerCase();
-            if (!q || p.name.toLowerCase().includes(q)) {
-              pods.push({
-                name: p.name,
-                namespace: ns.name,
-                cluster: cluster.name,
-                status: p.status || 'Running',
-                restarts: p.restarts || 0,
-                cpu: p.cpu_usage || '140m',
-                memory: p.memory_usage || '280Mi'
-              });
-            }
-          });
-        }
-      });
-    });
-  }
-  return pods;
-};
-
-const focusPod = (pod) => {
-  state.selectedPod = pod.name;
+function focusPod(podName) {
   container.dispatchEvent(new CustomEvent('ephemeris-select-pod', {
+    detail: { podId: podName },
     bubbles: true,
-    composed: true,
-    detail: {
-      podId: pod.name,
-      clusterName: pod.cluster,
-      namespaceName: pod.namespace
-    }
+    composed: true
   }));
-};
-
-const showPodLogs = (pod) => {
-  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
-    bubbles: true,
-    composed: true,
-    detail: {
-      prompt: 'Show me the logs for ' + pod.name,
-      podId: pod.name,
-      resourceUri: 'gke://' + pod.namespace + '/' + pod.name
-    }
-  }));
-};
-
-const template = html` + "`" + `
-  <div class="ephemeris-widget">
-    <div class="widget-header">
-      <div class="header-main">
-        <span class="pod-title">${() => '📦 Namespace Workload Inventory: ' + state.nsFilter}</span>
-        <span class="status-pill status-running">${() => getNamespacePods().length + ' Workloads'}</span>
-      </div>
-      <div class="header-meta">
-        <span>Click any pod to lock 3D camera reticle or inspect live container logs</span>
-      </div>
-    </div>
-
-    <div class="log-console-toolbar">
-      <div class="filter-pills">
-        <button class="${() => 'filter-pill ' + (state.nsFilter === 'default' ? 'active' : '')}" @click="${() => { state.nsFilter = 'default'; }}">
-          default
-        </button>
-        <button class="${() => 'filter-pill ' + (state.nsFilter === 'checkout' ? 'active' : '')}" @click="${() => { state.nsFilter = 'checkout'; }}">
-          checkout
-        </button>
-        <button class="${() => 'filter-pill ' + (state.nsFilter === 'data-pipeline' ? 'active' : '')}" @click="${() => { state.nsFilter = 'data-pipeline'; }}">
-          data-pipeline
-        </button>
-        <button class="${() => 'filter-pill ' + (state.nsFilter === 'all' ? 'active' : '')}" @click="${() => { state.nsFilter = 'all'; }}">
-          All Namespaces
-        </button>
-      </div>
-      <div class="log-search-row">
-        <input
-          type="text"
-          class="log-search-input"
-          placeholder="Search workloads by name..."
-          value="${() => state.searchQuery}"
-          @input="${(e) => { state.searchQuery = e.target.value; }}"
-        />
-      </div>
-    </div>
-
-    <div class="fleet-table-container">
-      ${() => getNamespacePods().map(pod => html` + "`" + `
-        <div class="${() => 'fleet-card ' + (state.selectedPod === pod.name ? 'selected' : '')}">
-          <div class="fleet-card-top">
-            <div class="fleet-pod-ident">
-              <span class="${() => 'status-pill status-' + pod.status.toLowerCase()}">${() => pod.status}</span>
-              <strong class="fleet-pod-name">${() => pod.name}</strong>
-              <span class="fleet-pod-loc">${() => pod.cluster + ' / ' + pod.namespace}</span>
-            </div>
-            <div class="fleet-pod-actions">
-              <button class="focus-3d-btn" @click="${() => focusPod(pod)}">🎯 Focus 3D</button>
-              <button class="filter-pill" @click="${() => showPodLogs(pod)}">📋 Logs</button>
-            </div>
-          </div>
-          <div class="fleet-pod-metrics">
-            <span>CPU: <strong>${() => pod.cpu}</strong></span>
-            <span>Memory: <strong>${() => pod.memory}</strong></span>
-            <span>Restarts: <strong>${() => pod.restarts}</strong></span>
-          </div>
-        </div>
-      ` + "`" + `)}
-    </div>
-  </div>
-` + "`" + `;
-
-template(container);
-`
 }
 
-// synthesizeResourceLeaderboardUI generates Archetype 4: Resource Utilization Leaderboard.
-func synthesizeResourceLeaderboardUI() string {
-	return `
-const state = reactive({
-  sortBy: 'memory'
-});
-
-const getRankedWorkloads = () => {
-  const list = [
-    { name: 'batch-ingestor', namespace: 'data-pipeline', cluster: 'staging-us-east1', status: 'Pending', cpuPct: 95, memPct: 92, cpu: '3800m', mem: '7.4Gi' },
-    { name: 'payment-service', namespace: 'default', cluster: 'production-us-central1', status: 'CrashLoopBackOff', cpuPct: 88, memPct: 89, cpu: '980m', mem: '1.8Gi' },
-    { name: 'cart-service', namespace: 'default', cluster: 'production-us-central1', status: 'Running', cpuPct: 62, memPct: 64, cpu: '620m', mem: '640Mi' },
-    { name: 'checkout-service', namespace: 'checkout', cluster: 'production-us-central1', status: 'Running', cpuPct: 54, memPct: 48, cpu: '540m', mem: '480Mi' },
-    { name: 'frontend', namespace: 'default', cluster: 'production-us-central1', status: 'Running', cpuPct: 41, memPct: 38, cpu: '410m', mem: '380Mi' },
-    { name: 'redis-cart', namespace: 'default', cluster: 'production-us-central1', status: 'Running', cpuPct: 29, memPct: 52, cpu: '290m', mem: '520Mi' }
-  ];
-  return list.sort((a, b) => state.sortBy === 'cpu' ? b.cpuPct - a.cpuPct : b.memPct - a.memPct);
-};
-
-const focusPod = (w) => {
-  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', {
+function triagePod(podName) {
+  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
+    detail: { podId: podName, prompt: 'Investigate crash in ' + podName + ' and synthesize triage UI' },
     bubbles: true,
-    composed: true,
-    detail: { podId: w.name, clusterName: w.cluster, namespaceName: w.namespace }
+    composed: true
   }));
-};
+}
 
-const template = html` + "`" + `
-  <div class="ephemeris-widget">
-    <div class="widget-header">
-      <div class="header-main">
-        <span class="pod-title">📊 Workload Resource Saturation Leaderboard</span>
-        <span class="status-pill status-running">Live Telemetry</span>
+function viewLogs(podName) {
+  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
+    detail: { podId: podName, prompt: 'show me the logs for ' + podName },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+function triggerScenario(scenarioPrompt) {
+  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
+    detail: { prompt: scenarioPrompt },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+const template = html`+"`"+`
+  <div style="display: flex; flex-direction: column; gap: 14px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
+    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.35);">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.45); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">Multi-Cluster Incident Fleet Matrix</span>
+        <span style="font-size: 12px; color: #cbd5e1;">${() => state.issues.length} Active Anomalies Across Clusters</span>
       </div>
-      <div class="header-meta">
-        <span>Sort by CPU or Memory saturation &bull; Click any bar to inspect in 3D</span>
-      </div>
+      <span style="font-size: 11px; color: #38bdf8; font-family: 'JetBrains Mono', monospace;">lookout: ${() => state.lookoutEnvelope}</span>
     </div>
 
-    <div class="log-console-toolbar">
-      <div class="filter-pills">
-        <button class="${() => 'filter-pill ' + (state.sortBy === 'memory' ? 'active' : '')}" @click="${() => { state.sortBy = 'memory'; }}">
-          Sort by Memory Saturation
-        </button>
-        <button class="${() => 'filter-pill ' + (state.sortBy === 'cpu' ? 'active' : '')}" @click="${() => { state.sortBy = 'cpu'; }}">
-          Sort by CPU Saturation
-        </button>
-      </div>
-    </div>
-
-    <div class="fleet-table-container">
-      ${() => getRankedWorkloads().map(w => html` + "`" + `
-        <div class="fleet-card">
-          <div class="fleet-card-top">
-            <div class="fleet-pod-ident">
-              <strong class="fleet-pod-name">${() => w.name}</strong>
-              <span class="fleet-pod-loc">${() => w.cluster + ' / ' + w.namespace}</span>
-            </div>
-            <div class="fleet-pod-actions">
-              <span class="metric-label">${() => state.sortBy === 'cpu' ? w.cpu + ' (' + w.cpuPct + '%)' : w.mem + ' (' + w.memPct + '%)'}</span>
-              <button class="focus-3d-btn" @click="${() => focusPod(w)}">🎯 Focus 3D</button>
-            </div>
-          </div>
-          <div class="metric-bar-bg">
-            <div class="${() => 'metric-bar-fill ' + ((state.sortBy === 'cpu' ? w.cpuPct : w.memPct) > 80 ? 'critical' : 'normal')}"
-                 style="${() => 'width: ' + (state.sortBy === 'cpu' ? w.cpuPct : w.memPct) + '%'}"></div>
-          </div>
+    ${() => state.lookoutFindings && state.lookoutFindings.length > 0 ? html`+"`"+`
+      <div style="background: rgba(15, 23, 42, 0.9); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 10px; font-weight: 700; color: #38bdf8; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.05em;">🔍 GO-STEER/K8S-LOOKOUT MCP FINDINGS (${() => state.lookoutEnvelope})</span>
         </div>
-      ` + "`" + `)}
-    </div>
+        ${() => state.lookoutFindings.map(f => html`+"`"+`
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; background: rgba(2, 6, 23, 0.65); padding: 6px 10px; border-radius: 6px; border-left: 3px solid #f87171; font-size: 11px;">
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="color: #fca5a5; font-weight: 700; font-family: 'JetBrains Mono', monospace;">[${f.kind}]</span>
+                <span style="color: #94a3b8; font-family: 'JetBrains Mono', monospace; font-size: 10px;">${f.fingerprint} • ${f.check_source}</span>
+              </div>
+              <span style="color: #e2e8f0;">${f.summary}</span>
+            </div>
+          </div>
+        `+"`"+`)}
+      </div>
+    `+"`"+` : ''}
+
+    ${() => state.issues.length === 0 ? html`+"`"+`
+      <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px;">
+        <div style="font-size: 24px;">✨</div>
+        <div style="font-size: 15px; font-weight: 700; color: #34d399;">ALL CLUSTERS HEALTHY — 0 ACTIVE INCIDENTS</div>
+        <div style="font-size: 12px; color: #cbd5e1; max-width: 420px;">All Kubernetes workloads across production, staging, and analytics clusters are Running nominally.</div>
+        <div style="display: flex; gap: 8px; margin-top: 6px;">
+          <button @click="${() => triggerScenario('inject redis oom cascade')}" style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
+            🔥 Inject Redis OOM Cascade
+          </button>
+          <button @click="${() => triggerScenario('simulate black friday traffic spike')}" style="background: rgba(251, 191, 36, 0.2); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.45); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
+            📈 Simulate Traffic Spike
+          </button>
+        </div>
+      </div>
+    `+"`"+` : html`+"`"+`
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        ${() => state.issues.map(pod => html`+"`"+`
+          <div style="background: rgba(15, 23, 42, 0.78); border: 1px solid rgba(239, 68, 68, 0.32); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 14px; font-weight: 700; color: #f8fafc; font-family: 'JetBrains Mono', monospace;">${pod.name}</span>
+                <span style="background: rgba(148, 163, 184, 0.15); color: #cbd5e1; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-family: 'JetBrains Mono', monospace;">ns: ${pod.namespace}</span>
+                <span style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-family: 'JetBrains Mono', monospace;">${pod.cluster}</span>
+              </div>
+              <span style="background: rgba(239, 68, 68, 0.22); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">
+                ${pod.status} (${pod.restarts} restarts)
+              </span>
+            </div>
+
+            <div style="font-size: 12px; color: #e2e8f0; background: rgba(2, 6, 23, 0.6); padding: 8px 10px; border-radius: 6px; border-left: 3px solid #f87171;">
+              ${pod.reason}
+            </div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 2px;">
+              <span style="font-size: 11px; color: #fbbf24; font-weight: 600;">Impact: ${pod.impact}</span>
+              <div style="display: flex; gap: 6px;">
+                <button @click="${() => focusPod(pod.name)}" style="background: rgba(30, 41, 59, 0.9); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">
+                  🎯 Focus 3D
+                </button>
+                <button @click="${() => viewLogs(pod.name)}" style="background: rgba(30, 41, 59, 0.9); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">
+                  📜 Logs
+                </button>
+                <button @click="${() => triagePod(pod.name)}" style="background: linear-gradient(135deg, #0284c7, #2563eb); color: #ffffff; border: none; border-radius: 6px; padding: 5px 12px; font-size: 11px; font-weight: 700; cursor: pointer;">
+                  ⚡ Deep Triage
+                </button>
+              </div>
+            </div>
+          </div>
+        `+"`"+`)}
+      </div>
+    `+"`"+`}
   </div>
-` + "`" + `;
+`+"`"+`;
 
 template(container);
-`
+`, envelope, string(findingsJSON), string(issuesJSON))
+}
+
+type uiNamespacePod struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	CPU    string `json:"cpu"`
+	Mem    string `json:"mem"`
+}
+
+// synthesizeNamespaceListUI generates a reactive ArrowJS Namespace Workload Inventory table bound to live topology.
+func synthesizeNamespaceListUI(namespace string, topology *api.TopologyData) string {
+	if namespace == "" {
+		namespace = "production"
+	}
+	var pods []uiNamespacePod
+	if topology != nil {
+		for _, cluster := range topology.Clusters {
+			for _, ns := range cluster.Namespaces {
+				if strings.EqualFold(ns.Name, namespace) || namespace == "all" {
+					for _, p := range ns.Pods {
+						pods = append(pods, uiNamespacePod{
+							Name:   p.Name,
+							Status: string(p.Status),
+							CPU:    p.CPUUsage,
+							Mem:    p.MemoryUsage,
+						})
+					}
+				}
+			}
+		}
+	}
+	if len(pods) == 0 && topology != nil {
+		for _, cluster := range topology.Clusters {
+			for _, ns := range cluster.Namespaces {
+				for _, p := range ns.Pods {
+					pods = append(pods, uiNamespacePod{
+						Name:   p.Name,
+						Status: string(p.Status),
+						CPU:    p.CPUUsage,
+						Mem:    p.MemoryUsage,
+					})
+				}
+			}
+		}
+	}
+
+	podsJSON, _ := json.Marshal(pods)
+
+	return fmt.Sprintf(`const state = reactive({
+  namespace: %q,
+  pods: %s
+});
+
+function focusPod(name) {
+  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', {
+    detail: { podId: name },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+function inspectLogs(name) {
+  container.dispatchEvent(new CustomEvent('ephemeris-prompt-query', {
+    detail: { podId: name, prompt: 'show me the logs for ' + name },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+const template = html`+"`"+`
+  <div style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
+    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.35);">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">Namespace Workload Inventory</span>
+        <span style="font-size: 13px; font-weight: 700; color: #f8fafc; font-family: 'JetBrains Mono', monospace;">namespace/${() => state.namespace} (${() => state.pods.length} pods)</span>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      ${() => state.pods.map(pod => html`+"`"+`
+        <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.72); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 8px; padding: 10px 12px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 13px; font-weight: 700; color: #f8fafc; font-family: 'JetBrains Mono', monospace;">${pod.name}</span>
+            <span style="background: rgba(56, 189, 248, 0.12); color: #cbd5e1; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-family: 'JetBrains Mono', monospace;">${pod.status}</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">CPU: ${pod.cpu} | MEM: ${pod.mem}</span>
+            <div style="display: flex; gap: 6px;">
+              <button @click="${() => focusPod(pod.name)}" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 6px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">
+                🎯 Focus 3D
+              </button>
+              <button @click="${() => inspectLogs(pod.name)}" style="background: rgba(30, 41, 59, 0.9); color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 6px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">
+                📜 Logs
+              </button>
+            </div>
+          </div>
+        </div>
+      `+"`"+`)}
+    </div>
+  </div>
+`+"`"+`;
+
+template(container);
+`, namespace, string(podsJSON))
+}
+
+type uiLeaderPod struct {
+	Name   string `json:"name"`
+	NS     string `json:"ns"`
+	CPU    string `json:"cpu"`
+	Mem    string `json:"mem"`
+	Status string `json:"status"`
+	Score  int    `json:"score"`
+}
+
+func parseMillicores(cpu string) int {
+	clean := strings.TrimSuffix(strings.TrimSpace(cpu), "m")
+	val, _ := strconv.Atoi(clean)
+	return val
+}
+
+// synthesizeResourceLeaderboardUI generates a reactive ArrowJS Cluster Resource Saturation Leaderboard bound to live topology.
+func synthesizeResourceLeaderboardUI(topology *api.TopologyData) string {
+	var list []uiLeaderPod
+	if topology != nil {
+		for _, cluster := range topology.Clusters {
+			for _, ns := range cluster.Namespaces {
+				for _, p := range ns.Pods {
+					mc := parseMillicores(p.CPUUsage)
+					score := mc / 10
+					if score > 99 {
+						score = 99
+					}
+					if score < 5 {
+						score = 8
+					}
+					list = append(list, uiLeaderPod{
+						Name:   p.Name,
+						NS:     ns.Name,
+						CPU:    p.CPUUsage,
+						Mem:    p.MemoryUsage,
+						Status: string(p.Status),
+						Score:  score,
+					})
+				}
+			}
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].Score > list[j].Score
+	})
+	if len(list) > 6 {
+		list = list[:6]
+	}
+
+	listJSON, _ := json.Marshal(list)
+
+	return fmt.Sprintf(`const state = reactive({
+  sortBy: 'CPU',
+  workloads: %s
+});
+
+function focusWorkload(name) {
+  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', {
+    detail: { podId: name },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+const template = html`+"`"+`
+  <div style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
+    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(251, 191, 36, 0.35);">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="background: rgba(251, 191, 36, 0.18); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">Workload Resource Saturation Leaderboard</span>
+      </div>
+      <span style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">Sorted by: Peak Saturation</span>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      ${() => state.workloads.map(w => html`+"`"+`
+        <div style="background: rgba(15, 23, 42, 0.78); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 13px; font-weight: 700; color: #f8fafc; font-family: 'JetBrains Mono', monospace;">${w.name}</span>
+              <span style="font-size: 10px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">ns/${w.ns}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 11px; color: #38bdf8; font-family: 'JetBrains Mono', monospace;">CPU: ${w.cpu} | MEM: ${w.mem}</span>
+              <button @click="${() => focusWorkload(w.name)}" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 5px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;">
+                🎯 Focus 3D
+              </button>
+            </div>
+          </div>
+          <div style="width: 100%%; height: 7px; background: rgba(30, 41, 59, 0.9); border-radius: 4px; overflow: hidden;">
+            <div style="${() => 'width: ' + w.score + '%%; height: 100%%; background: linear-gradient(90deg, #38bdf8, #f43f5e);'}"></div>
+          </div>
+        </div>
+      `+"`"+`)}
+    </div>
+  </div>
+`+"`"+`;
+
+template(container);
+`, string(listJSON))
 }

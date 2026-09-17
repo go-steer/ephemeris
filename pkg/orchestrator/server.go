@@ -60,6 +60,7 @@ type Server struct {
 }
 
 type clientState struct {
+	writeMu        sync.Mutex
 	activeResource string
 	selectedNodeID string
 }
@@ -72,6 +73,36 @@ func NewServer(cfg ServerConfig, gke gke.Provider, telem telemetry.Provider, age
 		telemetry: telem,
 		agent:     agent,
 		clients:   make(map[*websocket.Conn]*clientState),
+	}
+}
+
+func (s *Server) writeJSON(conn *websocket.Conn, state *clientState, msg api.ServerMessage) error {
+	if state != nil {
+		state.writeMu.Lock()
+		defer state.writeMu.Unlock()
+	}
+	return conn.WriteJSON(msg)
+}
+
+func (s *Server) broadcastTopology(topo *api.TopologyData) {
+	if topo == nil {
+		return
+	}
+	s.mu.Lock()
+	conns := make([]*websocket.Conn, 0, len(s.clients))
+	states := make([]*clientState, 0, len(s.clients))
+	for c, st := range s.clients {
+		conns = append(conns, c)
+		states = append(states, st)
+	}
+	s.mu.Unlock()
+
+	msg := api.ServerMessage{
+		Type:     api.MsgTypeTopology,
+		Topology: topo,
+	}
+	for i, c := range conns {
+		_ = s.writeJSON(c, states[i], msg)
 	}
 }
 
@@ -127,7 +158,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Send initial topology upon connection
 	ctx := r.Context()
-	s.sendTopology(ctx, conn)
+	s.sendTopology(ctx, conn, state)
 
 	for {
 		_, messageBytes, err := conn.ReadMessage()
@@ -140,7 +171,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		var clientMsg api.ClientMessage
 		if err := json.Unmarshal(messageBytes, &clientMsg); err != nil {
-			s.sendError(conn, fmt.Sprintf("invalid message format: %v", err))
+			s.sendError(conn, state, fmt.Sprintf("invalid message format: %v", err))
 			continue
 		}
 
@@ -151,7 +182,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, state *clientState, msg *api.ClientMessage) {
 	switch msg.Type {
 	case api.MsgTypeInit:
-		s.sendTopology(ctx, conn)
+		s.sendTopology(ctx, conn, state)
 
 	case api.MsgTypeSelectNode:
 		state.activeResource = msg.ResourceURI
@@ -161,14 +192,56 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		if msg.ResourceURI != "" {
 			telem, err := s.telemetry.QueryLogs(ctx, msg.ResourceURI, 50)
 			if err != nil {
-				s.sendError(conn, fmt.Sprintf("telemetry query failed: %v", err))
+				s.sendError(conn, state, fmt.Sprintf("telemetry query failed: %v", err))
 				return
 			}
-			_ = conn.WriteJSON(api.ServerMessage{
+			_ = s.writeJSON(conn, state, api.ServerMessage{
 				Type:      api.MsgTypeTelemetry,
 				Telemetry: telem,
 			})
 		}
+
+	case api.MsgTypeRemediate:
+		target := msg.SelectedNodeID
+		if target == "" {
+			target = state.selectedNodeID
+		}
+		if target == "" {
+			target = "payment-service"
+		}
+		pod, err := s.gke.RemediatePod(ctx, target, msg.RemediationAction)
+		if err != nil {
+			s.sendError(conn, state, fmt.Sprintf("remediation failed: %v", err))
+			return
+		}
+		if mockTelem, ok := s.telemetry.(*telemetry.MockProvider); ok {
+			mockTelem.RecordRemediation(pod.Name)
+		}
+		topo, _ := s.gke.GetTopology(ctx)
+		s.broadcastTopology(topo)
+		_ = s.writeJSON(conn, state, api.ServerMessage{
+			Type:    api.MsgTypeStatus,
+			Message: fmt.Sprintf("✓ Stateful remediation complete: %s is now Running (lookout findings cleared)", pod.Name),
+		})
+
+	case api.MsgTypeScenario:
+		scenarioID := msg.ScenarioID
+		if scenarioID == "" {
+			scenarioID = "default"
+		}
+		topo, err := s.gke.ApplyScenario(ctx, scenarioID)
+		if err != nil {
+			s.sendError(conn, state, fmt.Sprintf("scenario switch failed: %v", err))
+			return
+		}
+		if mockTelem, ok := s.telemetry.(*telemetry.MockProvider); ok {
+			mockTelem.SetScenario(scenarioID)
+		}
+		s.broadcastTopology(topo)
+		_ = s.writeJSON(conn, state, api.ServerMessage{
+			Type:    api.MsgTypeStatus,
+			Message: fmt.Sprintf("⚡ Chaos Scenario Injected: %s (broadcasting live topology & k8s-lookout findings)", scenarioID),
+		})
 
 	case api.MsgTypePrompt:
 		resourceURI := msg.ResourceURI
@@ -180,7 +253,7 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		}
 
 		statusFn := func(statusMsg string) {
-			_ = conn.WriteJSON(api.ServerMessage{
+			_ = s.writeJSON(conn, state, api.ServerMessage{
 				Type:    api.MsgTypeStatus,
 				Message: statusMsg,
 			})
@@ -194,6 +267,25 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 			Topology:    topo,
 		}, statusFn)
 
+		// If prompt requested a chaos scenario injection, apply it immediately and transition to issues_matrix
+		if intent.Archetype == ArchetypeChaosScenario {
+			scenarioID := intent.TargetScenario
+			if scenarioID == "" {
+				scenarioID = "redis-oom"
+			}
+			newTopo, err := s.gke.ApplyScenario(ctx, scenarioID)
+			if err == nil {
+				topo = newTopo
+				if mockTelem, ok := s.telemetry.(*telemetry.MockProvider); ok {
+					mockTelem.SetScenario(scenarioID)
+				}
+				s.broadcastTopology(topo)
+				statusFn(fmt.Sprintf("⚡ Chaos Scenario Injected: %s — synthesizing fleet incident matrix...", scenarioID))
+			}
+			intent.Archetype = ArchetypeIssuesFleetMatrix
+			resourceURI = "gke://fleet/issues"
+		}
+
 		// Adjust resourceURI based on LLM-resolved intent
 		switch intent.Archetype {
 		case ArchetypeIssuesFleetMatrix:
@@ -201,14 +293,14 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		case ArchetypeNamespaceInventory:
 			ns := intent.TargetNamespace
 			if ns == "" {
-				ns = "default"
+				ns = "production"
 			}
 			resourceURI = "gke://namespace/" + ns
 		case ArchetypeResourceLeaderboard:
 			resourceURI = "gke://fleet/leaderboard"
 		default:
 			if intent.TargetPod != "" && !strings.Contains(resourceURI, intent.TargetPod) {
-				resourceURI = "gke://default/" + intent.TargetPod
+				resourceURI = "gke://production/" + intent.TargetPod
 			}
 		}
 
@@ -216,7 +308,7 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		statusFn("Executing MCP telemetry & topology query...")
 		telem, err := s.telemetry.QueryLogs(ctx, resourceURI, 50)
 		if err != nil {
-			s.sendError(conn, fmt.Sprintf("telemetry query failed: %v", err))
+			s.sendError(conn, state, fmt.Sprintf("telemetry query failed: %v", err))
 			return
 		}
 		if topo != nil {
@@ -226,12 +318,12 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		// Step 3: Generate ArrowJS reactive UI with progressive streaming status updates
 		code, err := s.agent.GenerateStreamWithIntent(ctx, msg.Prompt, intent, telem, statusFn)
 		if err != nil {
-			s.sendError(conn, fmt.Sprintf("UI compilation failed: %v", err))
+			s.sendError(conn, state, fmt.Sprintf("UI compilation failed: %v", err))
 			return
 		}
 
 		// Step 4: Deliver UI component with resolved Archetype metadata
-		_ = conn.WriteJSON(api.ServerMessage{
+		_ = s.writeJSON(conn, state, api.ServerMessage{
 			Type: api.MsgTypeUIComponent,
 			UI: &api.UIComponentData{
 				ResourceURI:     resourceURI,
@@ -244,25 +336,25 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		})
 
 	default:
-		s.sendError(conn, fmt.Sprintf("unknown message type: %q", msg.Type))
+		s.sendError(conn, state, fmt.Sprintf("unknown message type: %q", msg.Type))
 	}
 }
 
-func (s *Server) sendTopology(ctx context.Context, conn *websocket.Conn) {
+func (s *Server) sendTopology(ctx context.Context, conn *websocket.Conn, state *clientState) {
 	topo, err := s.gke.GetTopology(ctx)
 	if err != nil {
-		s.sendError(conn, fmt.Sprintf("failed to fetch topology: %v", err))
+		s.sendError(conn, state, fmt.Sprintf("failed to fetch topology: %v", err))
 		return
 	}
 
-	_ = conn.WriteJSON(api.ServerMessage{
+	_ = s.writeJSON(conn, state, api.ServerMessage{
 		Type:     api.MsgTypeTopology,
 		Topology: topo,
 	})
 }
 
-func (s *Server) sendError(conn *websocket.Conn, errMsg string) {
-	_ = conn.WriteJSON(api.ServerMessage{
+func (s *Server) sendError(conn *websocket.Conn, state *clientState, errMsg string) {
+	_ = s.writeJSON(conn, state, api.ServerMessage{
 		Type:    api.MsgTypeError,
 		Message: errMsg,
 	})

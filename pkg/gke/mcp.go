@@ -28,6 +28,7 @@ import (
 type MCPProvider struct {
 	client    *mcp.Client
 	projectID string
+	fallback  *MockProvider
 }
 
 // NewMCPProvider creates a new MCP GKE topology provider.
@@ -35,6 +36,7 @@ func NewMCPProvider(client *mcp.Client, projectID string) *MCPProvider {
 	return &MCPProvider{
 		client:    client,
 		projectID: projectID,
+		fallback:  NewMockProvider(),
 	}
 }
 
@@ -121,4 +123,14 @@ func (p *MCPProvider) GetPodDetails(ctx context.Context, resourceURI string) (*a
 	}
 
 	return &pod, nil
+}
+
+// RemediatePod delegates remediation state tracking to the stateful fallback provider.
+func (p *MCPProvider) RemediatePod(ctx context.Context, podIDOrName string, action string) (*api.PodNode, error) {
+	return p.fallback.RemediatePod(ctx, podIDOrName, action)
+}
+
+// ApplyScenario delegates chaos scenario injection to the stateful fallback provider.
+func (p *MCPProvider) ApplyScenario(ctx context.Context, scenarioID string) (*api.TopologyData, error) {
+	return p.fallback.ApplyScenario(ctx, scenarioID)
 }

@@ -342,9 +342,9 @@ describe('initializeApp', () => {
     app.panel.showStreamingProgress('Testing reset', 'payment-service');
     expect(app.panel.isVisible).toBe(true);
 
-    let initCalled = false;
-    app.ws.sendInit = () => {
-      initCalled = true;
+    let sentScenario = null;
+    app.ws.sendScenario = (scenarioId) => {
+      sentScenario = scenarioId;
     };
 
     const resetIncidentBtn = document.getElementById('hud-reset-incident-btn');
@@ -352,11 +352,36 @@ describe('initializeApp', () => {
     resetIncidentBtn.click();
 
     expect(app.panel.isVisible).toBe(false);
-    expect(initCalled).toBe(true);
-    expect(mockData.clusters[0].namespaces[0].pods[0].status).toBe('CrashLoopBackOff');
+    expect(sentScenario).toBe('default');
     expect(document.getElementById('hud-status-msg').textContent).toContain(
-      'Demo incident reset: payment-service restored to CrashLoopBackOff state.'
+      'Demo incident reset: baseline payment-service CrashLoopBackOff scenario restored.'
     );
+  });
+
+  it('sends scenario mutation when #hud-scenario-select changes and sendRemediate on remediation', () => {
+    const app = initializeApp();
+    let sentScenario = null;
+    app.ws.sendScenario = (id) => {
+      sentScenario = id;
+    };
+
+    let sentRemediation = null;
+    app.ws.sendRemediate = (podId, action) => {
+      sentRemediation = { podId, action };
+    };
+
+    const scenarioSelect = document.getElementById('hud-scenario-select');
+    expect(scenarioSelect).not.toBeNull();
+    scenarioSelect.value = 'redis-oom';
+    scenarioSelect.dispatchEvent(new Event('change'));
+    expect(sentScenario).toBe('redis-oom');
+
+    document.dispatchEvent(
+      new CustomEvent('ephemeris-remediated', {
+        detail: { podId: 'redis-cart', status: 'Running', action: 'scale-memory' },
+      })
+    );
+    expect(sentRemediation).toEqual({ podId: 'redis-cart', action: 'scale-memory' });
   });
 
   it('opens Dedicated Object Chat & Inspector window on 3D pod click and handles object prompt submit', () => {

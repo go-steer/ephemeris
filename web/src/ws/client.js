@@ -162,6 +162,21 @@ export class WebSocketClient {
     });
   }
 
+  sendRemediate(podId, action = 'rollback') {
+    return this._send({
+      type: 'remediate',
+      selected_node_id: podId,
+      remediation_action: action,
+    });
+  }
+
+  sendScenario(scenarioId) {
+    return this._send({
+      type: 'scenario',
+      scenario_id: scenarioId,
+    });
+  }
+
   disconnect() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

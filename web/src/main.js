@@ -98,33 +98,32 @@ export function initializeApp() {
     }
   };
 
+  hud.onScenarioSelect = (scenarioId) => {
+    promptStartTime = performance.now();
+    hud.setStatusMessage(`Applying scenario "${scenarioId}" across multi-cluster fleet...`, true);
+    ws.sendScenario(scenarioId);
+  };
+
+  const onScenarioSelectEvent = (e) => {
+    const scenarioId = e.detail && e.detail.scenarioId;
+    if (scenarioId) {
+      hud.setScenario(scenarioId);
+      hud.onScenarioSelect(scenarioId);
+    }
+  };
+  document.addEventListener('ephemeris-scenario-select', onScenarioSelectEvent);
+  window.addEventListener('ephemeris-scenario-select', onScenarioSelectEvent);
+
   hud.onResetIncident = () => {
     panel.hide();
     hud.setSelectedPod(null);
     topologyMesh.clearSelectedPod();
     topologyMesh.clearBlastRadius();
     controls.resetView();
-
-    if (currentTopologyData && currentTopologyData.clusters) {
-      currentTopologyData.clusters.forEach((c) => {
-        (c.namespaces || []).forEach((ns) => {
-          (ns.pods || []).forEach((p) => {
-            if (p.name === 'payment-service' || (p.id && p.id.includes('payment'))) {
-              p.status = 'CrashLoopBackOff';
-            }
-          });
-        });
-      });
-      topologyMesh.build(currentTopologyData);
-      const select = document.getElementById('hud-cluster-select');
-      const activeClusterName = select ? select.value : '__overview__';
-      hud.setClusters(currentTopologyData.clusters, activeClusterName);
-      hud.onClusterSelect(activeClusterName, true);
-    }
-
-    ws.sendInit();
+    hud.setScenario('default');
+    ws.sendScenario('default');
     hud.setStatusMessage(
-      'Demo incident reset: payment-service restored to CrashLoopBackOff state.',
+      'Demo incident reset: baseline payment-service CrashLoopBackOff scenario restored.',
       false
     );
   };
@@ -286,11 +285,13 @@ export function initializeApp() {
     );
   };
 
-  // Wire Live Remediation Event (dispatched from ArrowJS sandbox) -> 3D Mesh
+  // Wire Live Remediation Event (dispatched from ArrowJS sandbox) -> 3D Mesh & Backend
   const onRemediate = (e) => {
     if (e.detail && e.detail.podId) {
       const podId = e.detail.podId;
       const newStatus = e.detail.status || 'Running';
+      const action = e.detail.action || 'rollback';
+      ws.sendRemediate(podId, action);
       topologyMesh.remediatePod(podId, newStatus);
       if (panel.statusBadge) {
         panel.statusBadge.textContent = newStatus;
@@ -481,9 +482,36 @@ export function initializeApp() {
     return hasIssue && hasQuery;
   };
 
+  const isChaosScenarioQuery = (pLower) => {
+    return (
+      pLower.includes('simulate') ||
+      pLower.includes('inject chaos') ||
+      pLower.includes('trigger ') ||
+      (pLower.includes('redis') && pLower.includes('oom')) ||
+      pLower.includes('traffic spike') ||
+      (pLower.includes('make') && pLower.includes('healthy')) ||
+      (pLower.includes('all') && pLower.includes('healthy') && !pLower.includes('why'))
+    );
+  };
+
   // 5. Wire Prompt Submission -> Intelligent Target Resolution & WebSocket
   hud.onPromptSubmit = (promptText, pod, meta) => {
     const pLower = (promptText || '').toLowerCase();
+
+    // 5a-0. Check for Chaos Scenario Injection intent ("simulate a redis oom cascade", "make all clusters healthy")
+    if (isChaosScenarioQuery(pLower)) {
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      controls.resetView();
+      promptStartTime = performance.now();
+      hud.setStatusMessage(`Executing chaos scenario mutation: "${promptText}"...`, true);
+      panel.showStreamingProgress(
+        'Mutating cluster state & running k8s-lookout check...',
+        'Chaos Scenario Injector'
+      );
+      ws.sendPrompt('chaos-injector', 'gke://fleet/chaos', promptText);
+      return;
+    }
 
     // 5a. Check for Fleet-wide Issues Matrix intent ("which pods have issues", "show me the list of pods with issues")
     if (isFleetIssuesQuery(pLower)) {
@@ -505,7 +533,14 @@ export function initializeApp() {
       pLower.includes('workloads in ')
     ) {
       let targetNs = 'default';
-      const knownNs = ['default', 'checkout', 'data-pipeline', 'payments', 'monitoring'];
+      const knownNs = [
+        'default',
+        'production',
+        'checkout',
+        'data-pipeline',
+        'payments',
+        'monitoring',
+      ];
       for (const ns of knownNs) {
         if (pLower.includes(ns)) {
           targetNs = ns;
@@ -614,29 +649,42 @@ export function initializeApp() {
   };
 
   ws.onTopology = (topologyData) => {
+    const isFirstLoad = !currentTopologyData;
     currentTopologyData = topologyData;
     topologyMesh.build(topologyData);
 
+    if (topologyData && topologyData.scenario_id) {
+      hud.setScenario(topologyData.scenario_id);
+    }
+
     if (topologyData && topologyData.clusters && topologyData.clusters.length > 0) {
       const clusters = topologyData.clusters;
-      hud.setClusters(clusters, '__overview__');
-      hud.onClusterSelect('__overview__', true);
+      const select = document.getElementById('hud-cluster-select');
+      const activeClusterName =
+        !isFirstLoad && select && select.value ? select.value : '__overview__';
+      hud.setClusters(clusters, activeClusterName);
+      hud.onClusterSelect(activeClusterName, true);
 
-      // Auto-focus the failing pod after initial load if available
-      let failingPodMesh = null;
-
-      // Auto-focus the failing pod after initial load if available
-      for (const mesh of topologyMesh.getInteractiveObjects()) {
-        if (mesh.userData && mesh.userData.isCrashLoop) {
-          failingPodMesh = mesh;
-          break;
+      if (isFirstLoad) {
+        // Auto-focus the failing pod after initial load if available
+        let failingPodMesh = null;
+        for (const mesh of topologyMesh.getInteractiveObjects()) {
+          if (mesh.userData && mesh.userData.isCrashLoop) {
+            failingPodMesh = mesh;
+            break;
+          }
         }
-      }
 
-      if (failingPodMesh) {
-        setTimeout(() => {
-          controls.focusOnMesh(failingPodMesh);
-        }, 800);
+        if (failingPodMesh) {
+          setTimeout(() => {
+            controls.focusOnMesh(failingPodMesh);
+          }, 800);
+        }
+      } else {
+        hud.setStatusMessage(
+          `Scenario "${topologyData.scenario_id || 'default'}" active. 3D spatial mesh synchronized.`,
+          false
+        );
       }
     }
   };
@@ -655,9 +703,17 @@ export function initializeApp() {
     let displayTitle = hud.selectedPod ? hud.selectedPod.name : msg.selected_node_id || 'Pod';
     let displayStatus = hud.selectedPod ? hud.selectedPod.status : 'Running';
 
-    if (archetype === 'issues_matrix' || codeStr.includes('Multi-Cluster Incident Fleet Matrix')) {
-      displayTitle = 'Multi-Cluster Fleet Issues';
-      displayStatus = 'CrashLoopBackOff';
+    if (
+      archetype === 'chaos_scenario' ||
+      archetype === 'issues_matrix' ||
+      codeStr.includes('Multi-Cluster Incident Fleet Matrix')
+    ) {
+      displayTitle =
+        archetype === 'chaos_scenario'
+          ? 'Chaos Scenario & Fleet Health'
+          : 'Multi-Cluster Fleet Issues';
+      const hasIssues = !codeStr.includes('ALL CLUSTERS HEALTHY');
+      displayStatus = hasIssues ? 'CrashLoopBackOff' : 'Running';
       panel.activeObject = null;
       hud.setSelectedPod(null);
       topologyMesh.clearSelectedPod();
