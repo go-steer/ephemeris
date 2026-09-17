@@ -72,7 +72,7 @@ export function initializeApp() {
     const resourceUri = pod?.resource_uri || `gke://${nsName}/${podName}`;
     promptStartTime = performance.now();
     hud.setStatusMessage(`Asking @${podName}: "${promptText}"...`, true);
-    panel.showStreamingProgress(`Synthesizing response for @${podName}...`, podName);
+    panel.startGeneration(podName, `Synthesizing response for @${podName}...`);
     ws.sendPrompt(pod?.id || podName, resourceUri, promptText);
   };
 
@@ -105,9 +105,9 @@ export function initializeApp() {
     controls.resetView();
     promptStartTime = performance.now();
     hud.setStatusMessage(`Applying scenario "${scenarioId}" across multi-cluster fleet...`, true);
-    panel.showStreamingProgress(
-      `Applying scenario "${scenarioId}" & running k8s-lookout diagnostics...`,
-      'Multi-Cluster Fleet Issues'
+    panel.startGeneration(
+      'Multi-Cluster Fleet Issues',
+      `Applying scenario "${scenarioId}" & running k8s-lookout diagnostics...`
     );
     ws.sendScenario(scenarioId);
   };
@@ -507,12 +507,18 @@ export function initializeApp() {
     return (
       pLower.includes('gateway') ||
       pLower.includes('httproute') ||
+      pLower.includes('route') ||
       pLower.includes('crd') ||
       pLower.includes('custom resource') ||
       pLower.includes('sparkapplication') ||
       pLower.includes('raycluster') ||
       pLower.includes('deployment') ||
-      pLower.includes('statefulset')
+      pLower.includes('statefulset') ||
+      pLower.includes('services') ||
+      pLower.includes('k8s service') ||
+      pLower.includes('show service') ||
+      pLower.includes('list service') ||
+      pLower.includes('controllers')
     );
   };
 
@@ -540,9 +546,9 @@ export function initializeApp() {
       controls.resetView();
       promptStartTime = performance.now();
       hud.setStatusMessage(`Executing chaos scenario mutation: "${promptText}"...`, true);
-      panel.showStreamingProgress(
-        'Mutating cluster state & running k8s-lookout check...',
-        'Chaos Scenario Injector'
+      panel.startGeneration(
+        'Chaos Scenario Injector',
+        'Mutating cluster state & running k8s-lookout check...'
       );
       ws.sendPrompt('chaos-injector', 'gke://fleet/chaos', promptText);
       return;
@@ -564,10 +570,7 @@ export function initializeApp() {
         ? `K8s & CRD Explorer: ${targetCluster}`
         : 'K8s & CRD Explorer';
       hud.setStatusMessage(`Synthesizing ${targetLabel} UI...`, true);
-      panel.showStreamingProgress(
-        'Synthesizing Kubernetes Controllers & CRD Explorer...',
-        targetLabel
-      );
+      panel.startGeneration(targetLabel, 'Routing intent & querying MCP lookout_resources...');
       const uri = targetCluster
         ? `gke://cluster/${targetCluster}/resources`
         : 'gke://fleet/resources';
@@ -600,11 +603,11 @@ export function initializeApp() {
           : `Scanning multi-cluster fleet for active issues...`,
         true
       );
-      panel.showStreamingProgress(
+      panel.startGeneration(
+        headerLabel,
         targetCluster
           ? `Querying anomalies in ${targetCluster}...`
-          : 'Querying multi-cluster anomalies...',
-        headerLabel
+          : 'Querying multi-cluster anomalies...'
       );
       const uri = targetCluster ? `gke://cluster/${targetCluster}/issues` : 'gke://fleet/issues';
       ws.sendPrompt(targetCluster ? `cluster-${targetCluster}` : 'fleet-issues', uri, promptText);
@@ -639,10 +642,7 @@ export function initializeApp() {
       );
       promptStartTime = performance.now();
       hud.setStatusMessage(`Listing workloads in namespace "${targetNs}"...`, true);
-      panel.showStreamingProgress(
-        `Listing workloads in namespace ${targetNs}...`,
-        `ns/${targetNs}`
-      );
+      panel.startGeneration(`ns/${targetNs}`, `Listing workloads in namespace ${targetNs}...`);
       ws.sendPrompt(`ns-${targetNs}`, `gke://namespace/${targetNs}`, promptText);
       return;
     }
@@ -661,10 +661,7 @@ export function initializeApp() {
       topologyMesh.clearFilterHighlight();
       promptStartTime = performance.now();
       hud.setStatusMessage(`Comparing cluster resource saturation...`, true);
-      panel.showStreamingProgress(
-        'Ranking workload CPU & memory saturation...',
-        'Resource Leaderboard'
-      );
+      panel.startGeneration('Resource Leaderboard', 'Ranking workload CPU & memory saturation...');
       ws.sendPrompt('fleet-leaderboard', 'gke://fleet/leaderboard', promptText);
       return;
     }
@@ -715,6 +712,7 @@ export function initializeApp() {
     hud.setSelectedPod(targetPod, targetMeta);
     promptStartTime = performance.now();
     hud.setStatusMessage(`Investigating ${targetPod.name}: "${promptText}"...`, true);
+    panel.startGeneration(targetPod.name, `Investigating @${targetPod.name}: "${promptText}"...`);
 
     const resourceUri =
       targetPod.resource_uri || `gke://${targetMeta?.namespaceName || 'default'}/${targetPod.name}`;
@@ -780,8 +778,7 @@ export function initializeApp() {
       return;
     }
     hud.setStatusMessage(statusMsg, true);
-    const activePodName = hud.selectedPod ? hud.selectedPod.name : 'Multi-Cluster Fleet Issues';
-    panel.showStreamingProgress(statusMsg, activePodName);
+    panel.appendGenerationStep(statusMsg);
   };
 
   ws.onUIComponent = (msg) => {

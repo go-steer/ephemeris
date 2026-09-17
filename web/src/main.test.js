@@ -536,6 +536,50 @@ describe('initializeApp', () => {
     expect(sentPrompt.text).toBe('Show me the logs for frontend');
   });
 
+  it('immediately clears previous sandbox content at t = 0ms and shows live synthesis stepper on prompt submit', () => {
+    const app = initializeApp();
+    app.panel.mount(
+      'const template = html`<div class="old-stale-content">OLD PANEL</div>`; template(container);'
+    );
+
+    expect(app.panel.runtime.container.innerHTML).toContain('OLD PANEL');
+
+    // Now submit a new prompt
+    app.hud.onPromptSubmit('show me the statefulsets', null, null);
+
+    // Verify stale content was cleared immediately at t = 0ms and replaced by live synthesis stepper
+    expect(app.panel.runtime.container.innerHTML).not.toContain('OLD PANEL');
+    expect(app.panel.runtime.container.innerHTML).toContain('Gemini 3.8 Flash Live Synthesis');
+    expect(app.panel.statusBadge.textContent).toBe('STREAMING');
+  });
+
+  it('pins a floating panel (📌) and spawns a second floating panel window when a subsequent prompt is submitted', () => {
+    const app = initializeApp();
+    app.panel.mount(
+      'const template = html`<div class="panel-one">StatefulSet Explorer</div>`; template(container);'
+    );
+
+    const panelContainer = document.getElementById('panel-container');
+    expect(panelContainer.querySelectorAll('.floating-panel').length).toBe(1);
+
+    // Pin the first panel
+    app.panel.pinBtn.click();
+    expect(app.panel.isPinned).toBe(true);
+    expect(app.panel.panelEl.classList.contains('pinned-panel')).toBe(true);
+
+    // Submit a new prompt -> should spawn a second floating panel without overwriting the first!
+    app.hud.onPromptSubmit('show me the deployments', null, null);
+
+    const allPanels = panelContainer.querySelectorAll('.floating-panel');
+    expect(allPanels.length).toBe(2);
+    // First panel still has its content
+    expect(app.panel.runtime.container.innerHTML).toContain('StatefulSet Explorer');
+    // Second spawned panel shows live stepper
+    expect(app.panel._childWindows[0].runtime.container.innerHTML).toContain(
+      'Gemini 3.8 Flash Live Synthesis'
+    );
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

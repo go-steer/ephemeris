@@ -19,24 +19,105 @@ import { ArrowSandboxRuntime } from './runtime.js';
  * draggable header, minimize/close controls, and TTI benchmark readouts.
  */
 export class IncidentPanel {
+  static zIndexCounter = 100;
+
   /**
    * @param {HTMLElement} container - Root element for the panel (e.g. #panel-container).
+   * @param {boolean} [isChild=false] - Whether this panel is a spawned child window.
+   * @param {number} [offsetIdx=0] - Spatial stagger offset index for multi-panel layout.
    */
-  constructor(container) {
+  constructor(container, isChild = false, offsetIdx = 0) {
     this.container = container;
+    this.isChild = isChild;
+    this.offsetIdx = offsetIdx;
     this.isMinimized = false;
     this.isVisible = false;
+    this.isPinned = false;
     this.activeObject = null;
-    this.onObjectPromptSubmit = null;
+    this._onObjectPromptSubmit = null;
+    this._generationTimer = null;
+    this._generationStart = 0;
+    this._generationSteps = [];
+    this._childWindows = [];
+    this._activeTargetWindow = this;
 
     this._createDOM();
     this.runtime = new ArrowSandboxRuntime(this.sandboxHost);
+  }
+
+  get onObjectPromptSubmit() {
+    return this._onObjectPromptSubmit;
+  }
+
+  set onObjectPromptSubmit(fn) {
+    this._onObjectPromptSubmit = fn;
+    for (const child of this._childWindows) {
+      child.onObjectPromptSubmit = fn;
+    }
+  }
+
+  _getTargetWindow() {
+    if (this.isChild) return this;
+    this._childWindows = this._childWindows.filter((w) => w.isVisible);
+
+    if (
+      this._activeTargetWindow &&
+      this._activeTargetWindow.isVisible &&
+      !this._activeTargetWindow.isPinned
+    ) {
+      return this._activeTargetWindow;
+    }
+    if (this.isVisible && !this.isPinned) {
+      this._activeTargetWindow = this;
+      return this;
+    }
+    for (const w of this._childWindows) {
+      if (w.isVisible && !w.isPinned) {
+        this._activeTargetWindow = w;
+        return w;
+      }
+    }
+    if (!this.isVisible) {
+      this.isPinned = false;
+      if (this.pinBtn) this.pinBtn.classList.remove('active');
+      this.panelEl.classList.remove('pinned-panel');
+      this._activeTargetWindow = this;
+      return this;
+    }
+
+    // All visible windows are pinned -> spawn a new draggable floating panel window
+    const offsetIdx = (this._childWindows.length + 1) % 5;
+    const child = new IncidentPanel(this.container, true, offsetIdx);
+    child.onObjectPromptSubmit = this._onObjectPromptSubmit;
+    this._childWindows.push(child);
+    this._activeTargetWindow = child;
+    return child;
+  }
+
+  bringToFront() {
+    this.panelEl.style.zIndex = String(++IncidentPanel.zIndexCounter);
+  }
+
+  togglePin() {
+    this.isPinned = !this.isPinned;
+    if (this.pinBtn) {
+      this.pinBtn.classList.toggle('active', this.isPinned);
+      this.pinBtn.title = this.isPinned
+        ? 'Pinned — next query will open a new window (click to unpin)'
+        : 'Pin panel (keep open when running next query)';
+    }
+    this.panelEl.classList.toggle('pinned-panel', this.isPinned);
   }
 
   _createDOM() {
     this.panelEl = document.createElement('div');
     this.panelEl.className = 'floating-panel';
     this.panelEl.style.display = 'none';
+    if (this.offsetIdx > 0) {
+      this.panelEl.style.right = `${24 + this.offsetIdx * 28}px`;
+      this.panelEl.style.top = `${72 + this.offsetIdx * 28}px`;
+    }
+    this.panelEl.addEventListener('pointerdown', () => this.bringToFront());
 
     // Header with drag handle and controls
     this.headerEl = document.createElement('div');
@@ -64,6 +145,15 @@ export class IncidentPanel {
     this.controlsArea = document.createElement('div');
     this.controlsArea.className = 'panel-controls';
 
+    this.pinBtn = document.createElement('button');
+    this.pinBtn.className = 'panel-control-btn pin';
+    this.pinBtn.innerHTML = '📌';
+    this.pinBtn.title = 'Pin panel (keep open when running next query)';
+    this.pinBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.togglePin();
+    });
+
     this.minBtn = document.createElement('button');
     this.minBtn.className = 'panel-control-btn';
     this.minBtn.innerHTML = '&minus;';
@@ -76,6 +166,7 @@ export class IncidentPanel {
     this.closeBtn.title = 'Close Panel';
     this.closeBtn.addEventListener('click', () => this.hide());
 
+    this.controlsArea.appendChild(this.pinBtn);
     this.controlsArea.appendChild(this.minBtn);
     this.controlsArea.appendChild(this.closeBtn);
 
@@ -218,8 +309,117 @@ export class IncidentPanel {
    * @param {object} pod - Selected 3D pod object { id, name, status, restarts, cpu, memory }.
    * @param {object} meta - Cluster/namespace metadata { clusterName, namespaceName }.
    */
+  _stopGenerationTimer() {
+    if (this._generationTimer) {
+      clearInterval(this._generationTimer);
+      this._generationTimer = null;
+    }
+  }
+
+  _renderGenerationStepper() {
+    const stepsHtml = this._generationSteps
+      .map((step, idx) => {
+        const isLast = idx === this._generationSteps.length - 1;
+        return `
+          <div class="step-item ${isLast ? 'active' : 'done'}">
+            <span class="step-num">${isLast ? '<span class="spinner-inline"></span>' : '✓'}</span>
+            <span class="step-text">${step}</span>
+          </div>
+        `;
+      })
+      .join('');
+
+    this.runtime.container.innerHTML = `
+      <div class="ephemeris-widget streaming-skeleton">
+        <div class="remediation-in-progress">
+          <div class="progress-title">
+            <span class="spinner-inline"></span>
+            <span>Gemini 3.8 Flash Live Synthesis & MCP Execution</span>
+          </div>
+          <div class="stepper-list">
+            ${stepsHtml}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Immediately clear the unpinned sandbox at t = 0ms and start the live synthesis stepper & timer.
+   * If all visible panels are pinned (📌), spawns a new draggable floating panel window.
+   *
+   * @param {string} title - Title for the panel header.
+   * @param {string} initialMessage - Initial synthesis step description.
+   */
+  startGeneration(
+    title = 'Synthesizing UI...',
+    initialMessage = 'Routing intent via gemini-3.8-flash...'
+  ) {
+    const win = this._getTargetWindow();
+    if (win !== this) {
+      return win.startGeneration(title, initialMessage);
+    }
+
+    this._stopGenerationTimer();
+    this.runtime.clear(); // Immediate t = 0ms sandbox wipe!
+
+    this.titleText.textContent = title;
+    this.statusBadge.textContent = 'STREAMING';
+    this.statusBadge.className = 'panel-status-pill status-pending';
+    this._generationStart = performance.now();
+    this.ttiBadge.textContent = 'TTI: LIVE...';
+    this.ttiBadge.className = 'panel-tti-badge';
+
+    if (this.objectTagEl) {
+      this.objectTagEl.textContent = `@${title}`;
+    }
+
+    this._generationSteps = [initialMessage];
+    this._renderGenerationStepper();
+    this.show();
+    this.bringToFront();
+
+    this._generationTimer = setInterval(() => {
+      const elapsed = ((performance.now() - this._generationStart) / 1000).toFixed(1);
+      this.ttiBadge.textContent = `TTI: ${elapsed}s...`;
+    }, 100);
+  }
+
+  /**
+   * Append a live progressive step from WebSocket status updates without re-compiling ArrowJS.
+   *
+   * @param {string} message - Status message from backend orchestrator.
+   */
+  appendGenerationStep(message) {
+    const win = this.isChild ? this : this._activeTargetWindow || this;
+    if (win !== this) {
+      return win.appendGenerationStep(message);
+    }
+    if (!message) return;
+    if (this._generationSteps.length === 0) {
+      this.startGeneration(this.titleText.textContent || 'Synthesizing UI...', message);
+      return;
+    }
+    if (this._generationSteps[this._generationSteps.length - 1] !== message) {
+      this._generationSteps.push(message);
+    }
+    this._renderGenerationStepper();
+  }
+
+  /**
+   * Open the floating Object Chat & Inspector window immediately when a 3D pod is clicked.
+   *
+   * @param {object} pod - Selected 3D pod object { id, name, status, restarts, cpu, memory }.
+   * @param {object} meta - Cluster/namespace metadata { clusterName, namespaceName }.
+   */
   openObjectInspector(pod, meta = {}) {
     if (!pod) return;
+    const win = this._getTargetWindow();
+    if (win !== this) {
+      return win.openObjectInspector(pod, meta);
+    }
+
+    this._stopGenerationTimer();
     this.activeObject = { pod, meta };
     const podName = pod.name || pod.id || 'Workload';
     const status = pod.status || 'Running';
@@ -330,6 +530,7 @@ export class IncidentPanel {
 
     this.runtime.execute(inspectorCode, { pod_id: podName });
     this.show();
+    this.bringToFront();
   }
 
   _setupDragging() {
@@ -340,7 +541,6 @@ export class IncidentPanel {
     let initialTop = 0;
 
     const onPointerDown = (e) => {
-      // Don't drag if clicking buttons
       if (e.target.closest('.panel-control-btn')) return;
 
       isDragging = true;
@@ -351,7 +551,6 @@ export class IncidentPanel {
       initialLeft = rect.left;
       initialTop = rect.top;
 
-      // Unset bottom/right positioning if set
       this.panelEl.style.right = 'auto';
       this.panelEl.style.bottom = 'auto';
       this.panelEl.style.left = `${initialLeft}px`;
@@ -390,6 +589,12 @@ export class IncidentPanel {
    * @param {object} meta - Additional metadata { podId, status, durationMs }.
    */
   mount(code, telemetry = {}, meta = {}) {
+    const win = this.isChild ? this : this._activeTargetWindow || this._getTargetWindow();
+    if (win !== this) {
+      return win.mount(code, telemetry, meta);
+    }
+
+    this._stopGenerationTimer();
     const podId = meta.podId || telemetry.pod_id || 'Pod';
     const status = meta.status || (telemetry.metrics && telemetry.metrics.status) || 'Running';
 
@@ -412,6 +617,7 @@ export class IncidentPanel {
 
     this.runtime.execute(code, telemetry);
     this.show();
+    this.bringToFront();
   }
 
   /**
@@ -421,46 +627,21 @@ export class IncidentPanel {
    * @param {string} podId - Target pod name.
    */
   showStreamingProgress(statusMessage, podId = 'Pod') {
+    const win = this.isChild ? this : this._activeTargetWindow || this._getTargetWindow();
+    if (win !== this) {
+      return win.showStreamingProgress(statusMessage, podId);
+    }
+    if (!this._generationTimer && this._generationSteps.length === 0) {
+      this.startGeneration(podId, statusMessage);
+      return;
+    }
     if (podId) {
       this.titleText.textContent = podId;
       if (this.objectTagEl) {
         this.objectTagEl.textContent = `@${podId}`;
       }
     }
-    this.statusBadge.textContent = 'STREAMING';
-    this.statusBadge.className = 'panel-status-pill status-pending';
-    this.ttiBadge.textContent = 'TTI: LIVE...';
-
-    const streamingCode = `
-      const state = reactive({
-        msg: ${JSON.stringify(statusMessage || 'Synthesizing reactive ArrowJS control interface...')},
-        pod: ${JSON.stringify(podId || 'Pod')}
-      });
-      const template = html\`
-        <div class="ephemeris-widget streaming-skeleton">
-          <div class="remediation-in-progress">
-            <div class="progress-title">
-              <span class="spinner-inline"></span>
-              <span>Gemini 3.8 Flash Live Synthesis</span>
-            </div>
-            <div class="stepper-list">
-              <div class="step-item done">
-                <span class="step-num">1</span>
-                <span class="step-text">Spatial context bound: <strong>\${() => state.pod}</strong></span>
-              </div>
-              <div class="step-item done">
-                <span class="step-num">2</span>
-                <span class="step-text">\${() => state.msg}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      \`;
-      template(container);
-    `;
-
-    this.runtime.execute(streamingCode, { pod_id: podId });
-    this.show();
+    this.appendGenerationStep(statusMessage);
   }
 
   show() {
@@ -472,8 +653,22 @@ export class IncidentPanel {
   }
 
   hide() {
+    this._stopGenerationTimer();
     this.panelEl.style.display = 'none';
     this.isVisible = false;
+    this.isPinned = false;
+    if (this.pinBtn) this.pinBtn.classList.remove('active');
+    this.panelEl.classList.remove('pinned-panel');
+    if (this.isChild && this.panelEl.parentNode) {
+      this.panelEl.parentNode.removeChild(this.panelEl);
+    }
+    if (!this.isChild) {
+      for (const child of this._childWindows) {
+        child.hide();
+      }
+      this._childWindows = [];
+      this._activeTargetWindow = this;
+    }
   }
 
   toggleMinimize() {
@@ -492,6 +687,7 @@ export class IncidentPanel {
   }
 
   clear() {
+    this._stopGenerationTimer();
     this.runtime.clear();
     this.titleText.textContent = 'Ephemeral Incident Triage';
     this.statusBadge.textContent = 'READY';

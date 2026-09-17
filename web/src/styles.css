@@ -860,6 +860,20 @@ body {
   color: var(--accent-red);
 }
 
+.panel-control-btn.pin.active {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: #38bdf8;
+  color: #38bdf8;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.45);
+}
+
+.floating-panel.pinned-panel {
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.7),
+    0 0 12px rgba(56, 189, 248, 0.25);
+}
+
 .panel-body {
   padding: 12px;
   overflow-y: auto;
