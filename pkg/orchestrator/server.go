@@ -263,6 +263,48 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 			},
 		})
 
+	case api.MsgTypeScaleTest:
+		cfg := api.ScaleTestConfig{Preset: msg.ScalePreset}
+		if msg.ScaleConfig != nil {
+			cfg = *msg.ScaleConfig
+			if cfg.Preset == "" {
+				cfg.Preset = msg.ScalePreset
+			}
+		}
+		if cfg.Preset == "" {
+			cfg.Preset = "large"
+		}
+		topo, err := s.gke.ApplyScaleTest(ctx, cfg)
+		if err != nil {
+			s.sendError(conn, state, fmt.Sprintf("scale test failed: %v", err))
+			return
+		}
+		s.broadcastTopology(topo)
+		_ = s.writeJSON(conn, state, api.ServerMessage{
+			Type:    api.MsgTypeStatus,
+			Message: fmt.Sprintf("⚡ Scale Stress Test Active: %s preset (%d clusters)", cfg.Preset, len(topo.Clusters)),
+		})
+		telemData := &api.TelemetryData{
+			ResourceURI: "gke://fleet/scale-test",
+			Topology:    topo,
+		}
+		intent := LLMIntentResult{
+			Archetype:      ArchetypeScaleBenchmark,
+			TargetScenario: cfg.Preset,
+			Reasoning:      fmt.Sprintf("Synthetic fleet scale stress-test (%s preset) generated across %d GKE clusters.", cfg.Preset, len(topo.Clusters)),
+		}
+		code, _ := s.agent.GenerateStreamWithIntent(ctx, "scale test benchmark", intent, telemData, nil)
+		_ = s.writeJSON(conn, state, api.ServerMessage{
+			Type: api.MsgTypeUIComponent,
+			UI: &api.UIComponentData{
+				ResourceURI: "gke://fleet/scale-test",
+				Prompt:      fmt.Sprintf("Scale Test: %s", cfg.Preset),
+				Archetype:   string(ArchetypeScaleBenchmark),
+				Code:        code,
+				Telemetry:   telemData,
+			},
+		})
+
 	case api.MsgTypePrompt:
 		resourceURI := msg.ResourceURI
 		if resourceURI == "" {
@@ -287,6 +329,21 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 			Topology:    topo,
 		}, statusFn)
 
+		// If prompt requested a scale stress test, apply it immediately
+		if intent.Archetype == ArchetypeScaleBenchmark {
+			preset := intent.TargetScenario
+			if preset == "" {
+				preset = "large"
+			}
+			newTopo, err := s.gke.ApplyScaleTest(ctx, api.ScaleTestConfig{Preset: preset})
+			if err == nil {
+				topo = newTopo
+				s.broadcastTopology(topo)
+				statusFn(fmt.Sprintf("⚡ Scale Stress Test Injected: %s (%d clusters) — synthesizing benchmark UI...", preset, len(topo.Clusters)))
+			}
+			resourceURI = "gke://fleet/scale-test"
+		}
+
 		// If prompt requested a chaos scenario injection, apply it immediately and transition to issues_matrix
 		if intent.Archetype == ArchetypeChaosScenario {
 			scenarioID := intent.TargetScenario
@@ -308,6 +365,8 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 
 		// Adjust resourceURI based on LLM-resolved intent
 		switch intent.Archetype {
+		case ArchetypeScaleBenchmark:
+			resourceURI = "gke://fleet/scale-test"
 		case ArchetypeIssuesFleetMatrix:
 			if intent.TargetCluster != "" {
 				resourceURI = "gke://cluster/" + intent.TargetCluster + "/issues"

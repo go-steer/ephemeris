@@ -158,9 +158,9 @@ describe('TopologyMesh', () => {
     const runningPod = pods.find((m) => m.userData.pod.name === 'frontend');
     const crashPod = pods.find((m) => m.userData.pod.name === 'payment-service');
 
-    // Verify inner container hexagon (radialSegments: 6)
+    // Verify inner container hexagon (radialSegments: 6, compact scaled height)
     expect(runningPod.geometry.parameters.radialSegments).toBe(6);
-    expect(runningPod.geometry.parameters.height).toBe(1.1);
+    expect(runningPod.geometry.parameters.height).toBeCloseTo(0.68 * 0.72, 2);
 
     // Verify outer pod boundary heptagon (radialSegments: 7)
     expect(runningPod.userData.podBoundary).toBeDefined();
@@ -263,5 +263,118 @@ describe('TopologyMesh', () => {
     topology.clearSelectedPod();
     expect(topology.selectionReticle).toBeNull();
     expect(topology.selectedPodMesh).toBeNull();
+  });
+
+  it('renders stratified 3D Kubernetes resources (Deployment, ReplicaSet, Gateway) and connects them with ownership beams', () => {
+    activeTopology.clusters[0].namespaces[0].resources = [
+      {
+        id: 'rs-payment-84f7b6',
+        kind: 'ReplicaSet',
+        name: 'payment-service-84f7b6',
+        status: 'Degraded',
+        owner_id: 'deploy-payment',
+        children_ids: ['payment-service'],
+      },
+      {
+        id: 'deploy-payment',
+        kind: 'Deployment',
+        name: 'payment-service',
+        status: 'Degraded',
+        children_ids: ['rs-payment-84f7b6'],
+      },
+      {
+        id: 'gw-ingress',
+        kind: 'Gateway',
+        name: 'prod-ingress-gw',
+        status: 'Healthy',
+      },
+    ];
+
+    topology.build(activeTopology);
+
+    expect(topology.resourceMeshes.length).toBe(3);
+    expect(topology.ownershipBeams.length).toBe(2);
+
+    const stats = topology.getPerformanceStats();
+    expect(stats.totalObjects).toBe(6); // 3 pods + 3 resources
+
+    // Layer filter: 'pods' hides controllers
+    topology.setLayerFilter('pods');
+    const rsMesh = topology.resourceMap.get('rs-payment-84f7b6');
+    expect(rsMesh.userData.podGroup.visible).toBe(false);
+
+    // Layer filter: 'hierarchy' shows ReplicaSet/Deployment but hides Gateway
+    topology.setLayerFilter('hierarchy');
+    expect(rsMesh.userData.podGroup.visible).toBe(true);
+    const gwMesh = topology.resourceMap.get('gw-ingress');
+    expect(gwMesh.userData.podGroup.visible).toBe(false);
+
+    // Highlight ownership chain when selecting Deployment
+    topology.setLayerFilter('all');
+    topology.highlightOwnershipChain('deploy-payment');
+    const activeBeam = topology.ownershipBeams.find((b) => b.parentId === 'deploy-payment');
+    expect(activeBeam.line.material.opacity).toBe(0.95);
+  });
+
+  it('supports hover-trouble default mode, pointer flyover chain reveal, close-up zoom reveal, and compact billboard world scale', () => {
+    activeTopology.clusters[0].namespaces[0].resources = [
+      {
+        id: 'rs-frontend',
+        kind: 'ReplicaSet',
+        name: 'frontend-rs',
+        status: 'Healthy',
+        children_ids: ['frontend'],
+      },
+    ];
+    topology.build(activeTopology);
+
+    const rsMesh = topology.resourceMap.get('rs-frontend');
+    const runningPod = topology
+      .getInteractiveObjects()
+      .find((m) => m.userData.pod.name === 'frontend');
+    const crashPod = topology.getInteractiveObjects().find((m) => m.userData.isCrashLoop);
+
+    // Compact billboard height (~0.25 world units)
+    expect(rsMesh.userData.nameSprite.scale.y).toBeCloseTo(0.25, 2);
+
+    // Default mode is 'hover-trouble': healthy Pod and ReplicaSet labels are hidden at overview distance, while crashing pod label is visible
+    expect(topology.labelMode).toBe('hover-trouble');
+    expect(runningPod.userData.nameSprite.visible).toBe(false);
+    expect(rsMesh.userData.nameSprite.visible).toBe(false);
+    expect(crashPod.userData.nameSprite.visible).toBe(true);
+
+    // Pointer flyover (hover) on ReplicaSet immediately reveals both RS and its owned Pod in the chain
+    topology.setHoveredNode(rsMesh.userData);
+    expect(rsMesh.userData.nameSprite.visible).toBe(true);
+    expect(runningPod.userData.nameSprite.visible).toBe(true);
+
+    // Unhover hides healthy labels again
+    topology.setHoveredNode(null);
+    expect(rsMesh.userData.nameSprite.visible).toBe(false);
+    expect(runningPod.userData.nameSprite.visible).toBe(false);
+
+    // Zooming camera close (< 18 world units) automatically reveals nearby healthy labels
+    const closeCamera = new THREE.PerspectiveCamera();
+    closeCamera.position
+      .copy(runningPod.userData.podGroup.position)
+      .add(new THREE.Vector3(0, 5, 8));
+    topology.update(1000, closeCamera);
+    expect(runningPod.userData.nameSprite.visible).toBe(true);
+
+    // Moving camera back to overview hides healthy labels again in hover-trouble mode
+    const farCamera = new THREE.PerspectiveCamera();
+    farCamera.position.set(0, 40, 65);
+    topology.update(1000, farCamera);
+    expect(runningPod.userData.nameSprite.visible).toBe(false);
+
+    // In 'all' mode, all labels within LOD become visible
+    topology.setLabelMode('all');
+    expect(rsMesh.userData.nameSprite.visible).toBe(true);
+
+    // In 'off' mode, all node labels (even crashing) are hidden unless hovered
+    topology.setLabelMode('off');
+    expect(crashPod.userData.nameSprite.visible).toBe(false);
+    topology.setHoveredNode(crashPod.userData);
+    expect(crashPod.userData.nameSprite.visible).toBe(true);
   });
 });

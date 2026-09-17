@@ -287,6 +287,15 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 			onStatus("⚡ [mast:arrowjs-compiler] Synthesizing Live Container Log Console (ArrowJS)...")
 		}
 		code = synthesizeLogsConsoleUI(telemetry)
+	case ArchetypeScaleBenchmark:
+		preset := intent.TargetScenario
+		if preset == "" {
+			preset = "standard"
+		}
+		if onStatus != nil {
+			onStatus(fmt.Sprintf("⚡ [mast:arrowjs-compiler] Synthesizing 3D Fleet Scale Stress-Test Cockpit (%s)...", preset))
+		}
+		code = synthesizeScaleBenchmarkUI(topo, preset)
 	default:
 		code = a.generateFallbackStream(userPrompt, telemetry, onStatus)
 	}

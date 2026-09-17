@@ -191,6 +191,14 @@ export class WebSocketClient {
     });
   }
 
+  sendScaleTest(preset = 'large', config = null) {
+    return this._send({
+      type: 'scale_test',
+      scale_preset: preset,
+      scale_config: config || undefined,
+    });
+  }
+
   disconnect() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

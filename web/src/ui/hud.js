@@ -31,6 +31,8 @@ export class HUDOverlay {
     this.onResetIncident = null;
     this.onClusterSelect = null;
     this.onScenarioSelect = null;
+    this.onScaleTestSelect = null;
+    this.onLayerFilterChange = null;
     this.onClearSelection = null;
 
     this._createDOM();
@@ -64,7 +66,22 @@ export class HUDOverlay {
               <option value="healthy">🟢 Scenario: All Healthy (0 Issues)</option>
             </select>
           </div>
+          <div class="cluster-select-wrapper scale-select-wrapper">
+            <span class="cluster-select-icon">🚀</span>
+            <select id="hud-scale-select" class="cluster-select-dropdown scale-select-dropdown" aria-label="Fleet Scale Stress Test" title="Synthetic Multi-Cluster Scale Stress Test">
+              <option value="standard">Scale: Standard (3 Clusters • 45 Obj)</option>
+              <option value="medium">Scale: Medium (6 Clusters • 240+ Obj)</option>
+              <option value="large">⚡ Scale Stress: 12 Clusters (636 Obj)</option>
+            </select>
+          </div>
+          <div class="layer-filter-group" id="hud-layer-group" title="Filter 3D Stratified Kubernetes Stack Layers">
+            <button class="layer-pill active" data-layer="all">All Stack</button>
+            <button class="layer-pill" data-layer="hierarchy">Deploy→RS→Pod</button>
+            <button class="layer-pill" data-layer="networking">GW→Route→Svc</button>
+            <button class="layer-pill" data-layer="pods">Pods Only</button>
+          </div>
           <div class="stats-counters">
+            <span class="stat-badge perf" id="hud-perf-pill" title="Live WebGL Render Frame Rate & Total 3D Scene Objects">60 FPS &bull; 45 Obj</span>
             <span class="stat-badge running" id="hud-stat-running">&bull; 0 Running</span>
             <span class="stat-badge crash" id="hud-stat-crash">&#x2715; 0 Crashing</span>
             <span class="stat-badge pending" id="hud-stat-pending">&#x25B2; 0 Pending</span>
@@ -72,6 +89,7 @@ export class HUDOverlay {
         </div>
 
         <div class="header-actions">
+          <button class="hud-btn label-mode-btn" id="hud-label-mode-btn" data-mode="hover-trouble" title="Toggle 3D Label Mode: Hover & Trouble (Default) / Smart / All / Off">&#x1F3F7;&#xFE0F; Labels: Hover &amp; Trouble</button>
           <div class="camera-mode-toggle" id="hud-camera-toggle">
             <button class="mode-btn active" id="hud-btn-mode-orbit" title="Orbit (Rotate) around cluster or target">🔄 Orbit</button>
             <button class="mode-btn" id="hud-btn-mode-pan" title="Pan (Move) camera focus left/right, up/down (or hold Shift / Space)">✋ Pan</button>
@@ -231,6 +249,48 @@ export class HUDOverlay {
       });
     }
 
+    const scaleSelect = this.container.querySelector('#hud-scale-select');
+    if (scaleSelect) {
+      scaleSelect.addEventListener('change', (e) => {
+        if (this.onScaleTestSelect) {
+          this.onScaleTestSelect(e.target.value);
+        }
+      });
+    }
+
+    const layerPills = this.container.querySelectorAll('.layer-pill');
+    layerPills.forEach((pill) => {
+      pill.addEventListener('click', () => {
+        layerPills.forEach((p) => p.classList.remove('active'));
+        pill.classList.add('active');
+        const mode = pill.getAttribute('data-layer') || 'all';
+        if (this.onLayerFilterChange) {
+          this.onLayerFilterChange(mode);
+        }
+      });
+    });
+
+    const labelModeBtn = this.container.querySelector('#hud-label-mode-btn');
+    if (labelModeBtn) {
+      const modes = ['hover-trouble', 'smart', 'all', 'off'];
+      const labels = {
+        'hover-trouble': '🏷️ Labels: Hover & Trouble',
+        smart: '🏷️ Labels: Smart',
+        all: '🏷️ Labels: All',
+        off: '🏷️ Labels: Off',
+      };
+      labelModeBtn.addEventListener('click', () => {
+        const current = labelModeBtn.getAttribute('data-mode') || 'hover-trouble';
+        const nextIdx = (modes.indexOf(current) + 1) % modes.length;
+        const nextMode = modes[nextIdx];
+        labelModeBtn.setAttribute('data-mode', nextMode);
+        labelModeBtn.textContent = labels[nextMode];
+        if (this.onLabelModeChange) {
+          this.onLabelModeChange(nextMode);
+        }
+      });
+    }
+
     const chipBtns = this.container.querySelectorAll('.chip-btn');
     chipBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -245,6 +305,21 @@ export class HUDOverlay {
     if (select && scenarioId) {
       select.value = scenarioId;
     }
+  }
+
+  setScalePreset(preset = 'standard') {
+    const select = this.container.querySelector('#hud-scale-select');
+    if (select && preset) {
+      select.value = preset;
+    }
+  }
+
+  updatePerformanceStats(stats) {
+    const pill = this.container.querySelector('#hud-perf-pill');
+    if (!pill || !stats) return;
+    const fps = stats.fps ?? 60;
+    const total = stats.totalObjects ?? 0;
+    pill.textContent = `${fps} FPS • ${total} Obj`;
   }
 
   setClusters(clusters = [], activeClusterName = '') {

@@ -134,3 +134,8 @@ func (p *MCPProvider) RemediatePod(ctx context.Context, podIDOrName string, acti
 func (p *MCPProvider) ApplyScenario(ctx context.Context, scenarioID string) (*api.TopologyData, error) {
 	return p.fallback.ApplyScenario(ctx, scenarioID)
 }
+
+// ApplyScaleTest delegates synthetic scale test generation to the fallback provider.
+func (p *MCPProvider) ApplyScaleTest(ctx context.Context, cfg api.ScaleTestConfig) (*api.TopologyData, error) {
+	return p.fallback.ApplyScaleTest(ctx, cfg)
+}

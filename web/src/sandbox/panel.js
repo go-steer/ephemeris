@@ -533,6 +533,25 @@ export class IncidentPanel {
     this.bringToFront();
   }
 
+  _clampToViewport() {
+    if (!this.panelEl || typeof window === 'undefined' || !this.isVisible) return;
+    const rect = this.panelEl.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return;
+
+    const minTop = 58;
+    const maxTop = Math.max(minTop, window.innerHeight - 90);
+    const minLeft = 12;
+    const maxLeft = Math.max(minLeft, window.innerWidth - rect.width - 12);
+
+    const clampedTop = Math.max(minTop, Math.min(maxTop, rect.top));
+    const clampedLeft = Math.max(minLeft, Math.min(maxLeft, rect.left));
+
+    this.panelEl.style.right = 'auto';
+    this.panelEl.style.bottom = 'auto';
+    this.panelEl.style.left = `${clampedLeft}px`;
+    this.panelEl.style.top = `${clampedTop}px`;
+  }
+
   _setupDragging() {
     let isDragging = false;
     let startX = 0;
@@ -565,8 +584,9 @@ export class IncidentPanel {
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
 
-      const newLeft = Math.max(10, Math.min(window.innerWidth - 300, initialLeft + dx));
-      const newTop = Math.max(50, Math.min(window.innerHeight - 100, initialTop + dy));
+      const panelWidth = this.panelEl.offsetWidth || 530;
+      const newLeft = Math.max(12, Math.min(window.innerWidth - panelWidth - 12, initialLeft + dx));
+      const newTop = Math.max(58, Math.min(window.innerHeight - 90, initialTop + dy));
 
       this.panelEl.style.left = `${newLeft}px`;
       this.panelEl.style.top = `${newTop}px`;
@@ -579,6 +599,9 @@ export class IncidentPanel {
     };
 
     this.headerEl.addEventListener('pointerdown', onPointerDown);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('resize', () => this._clampToViewport());
+    }
   }
 
   /**
@@ -650,6 +673,7 @@ export class IncidentPanel {
     if (this.isMinimized) {
       this.toggleMinimize();
     }
+    this._clampToViewport();
   }
 
   hide() {

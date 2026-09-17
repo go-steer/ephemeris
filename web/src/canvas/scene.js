@@ -164,7 +164,7 @@ export class SceneManager {
       }
 
       for (const cb of this.animationCallbacks) {
-        cb(time);
+        cb(time, this.camera);
       }
 
       this.renderer.render(this.scene, this.camera);

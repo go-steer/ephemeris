@@ -133,8 +133,8 @@ function createTextSprite(text, color = '#e8eaed', fontSize = 16, badge = '') {
   });
   const sprite = new THREE.Sprite(spriteMaterial);
 
-  // Proportional world scale in 3D scene
-  const worldHeight = fontSize >= 18 ? 0.85 : 0.55;
+  // Sleek, compact proportional world scale in 3D scene (~54% smaller width/height)
+  const worldHeight = fontSize >= 18 ? 0.52 : 0.25;
   const worldWidth = worldHeight * (canvasWidth / canvasHeight);
   sprite.scale.set(worldWidth, worldHeight, 1);
   return sprite;
@@ -153,10 +153,14 @@ export class TopologyMesh {
     this.scene.add(this.group);
 
     this.podMeshes = [];
+    this.resourceMeshes = [];
     this.crashPods = [];
     this.clusterMonoliths = [];
     this.curveParticles = [];
-    this.podMap = new Map(); // pod.id / name -> podMesh
+    this.ownershipBeams = [];
+    this.allLabelSprites = [];
+    this.podMap = new Map(); // pod.id / name -> mesh
+    this.resourceMap = new Map(); // resource.id / name -> mesh
     this.clusterPositions = new Map(); // cluster.name -> Vector3
     this.clusterPlaques = new Map(); // cluster.name -> { sprite, group }
     this.clusterSlits = new Map(); // cluster.name -> slitMesh
@@ -168,6 +172,25 @@ export class TopologyMesh {
     this.trafficDrainMap = new Map();
     this.selectedPodMesh = null;
     this.selectionReticle = null;
+
+    this.activeLayerFilter = 'all';
+    this.labelMode = 'hover-trouble';
+    this.activeChainIds = new Set();
+    this.hoveredNodeId = null;
+    this.hoveredChainIds = new Set();
+    this._lastCamera = null;
+    this.objectScaleFactor = 0.72;
+    this.stats = {
+      fps: 60,
+      totalObjects: 0,
+      clusterCount: 0,
+      podCount: 0,
+      resourceCount: 0,
+      activeLayer: 'all',
+      labelMode: 'hover-trouble',
+    };
+    this._lastFrameTime = performance.now();
+    this._frameSamples = [];
   }
 
   /**
@@ -184,19 +207,55 @@ export class TopologyMesh {
     const clusters = topologyData.clusters;
     const clusterCount = clusters.length;
 
+    let podCount = 0;
+    let resourceCount = 0;
+    clusters.forEach((c) => {
+      (c.namespaces || []).forEach((ns) => {
+        podCount += (ns.pods || []).length;
+        resourceCount += (ns.resources || []).length;
+      });
+    });
+
+    const totalObjects = podCount + resourceCount;
+    // Scale down base object dimensions per user request, and adapt further at high object counts
+    this.objectScaleFactor = totalObjects > 300 ? 0.48 : totalObjects > 120 ? 0.58 : 0.72;
+    this.stats.clusterCount = clusterCount;
+    this.stats.podCount = podCount;
+    this.stats.resourceCount = resourceCount;
+    this.stats.totalObjects = totalObjects;
+
     clusters.forEach((cluster, idx) => {
-      // Position multiple clusters spatially across the grid
+      // Position multiple clusters spatially across concentric fleet rings
       let cx = 0;
       let cz = 0;
       if (clusterCount > 1) {
         if (idx === 0) {
           cx = 0;
           cz = 0;
-        } else {
+        } else if (clusterCount <= 3) {
           const angle = ((idx - 1) / (clusterCount - 1)) * Math.PI + Math.PI / 6;
-          const dist = 48;
+          const dist = 42;
           cx = Math.cos(angle) * dist;
           cz = Math.sin(angle) * dist;
+        } else if (clusterCount <= 7) {
+          const angle = ((idx - 1) / (clusterCount - 1)) * Math.PI * 2;
+          const dist = 44;
+          cx = Math.cos(angle) * dist;
+          cz = Math.sin(angle) * dist;
+        } else {
+          // Multi-ring fleet layout for 8-12+ clusters
+          if (idx <= 5) {
+            const angle = ((idx - 1) / 5) * Math.PI * 2;
+            const dist = 42;
+            cx = Math.cos(angle) * dist;
+            cz = Math.sin(angle) * dist;
+          } else {
+            const outerCount = clusterCount - 6;
+            const angle = ((idx - 6) / outerCount) * Math.PI * 2 + Math.PI / 12;
+            const dist = 78;
+            cx = Math.cos(angle) * dist;
+            cz = Math.sin(angle) * dist;
+          }
         }
       }
 
@@ -207,7 +266,9 @@ export class TopologyMesh {
       this._buildNamespacesAndPods(cluster, clusterPos);
     });
 
+    this._buildOwnershipBeams();
     this._buildDependencyCurves();
+    this.setLayerFilter(this.activeLayerFilter);
   }
 
   _buildClusterPlatform(cluster, center) {
@@ -276,8 +337,10 @@ export class TopologyMesh {
     const statusLabel = hasCrash ? '1 CRASHING' : 'HEALTHY';
     const statusTextColor = hasCrash ? '#ea4335' : '#34a853';
     const plaqueSprite = createTextSprite(cluster.name, statusTextColor, 18, statusLabel);
+    plaqueSprite.userData = { isPlaque: true, isIncident: hasCrash, kind: 'Cluster' };
     plaqueSprite.position.set(0, 4.4, 0);
     clusterGroup.add(plaqueSprite);
+    this.allLabelSprites.push(plaqueSprite);
     this.clusterPlaques.set(cluster.name, { sprite: plaqueSprite, group: clusterGroup });
 
     this.group.add(clusterGroup);
@@ -348,8 +411,10 @@ export class TopologyMesh {
       const nsColor = nsHasCrash ? '#ea4335' : '#8ab4f8';
       const nsBadge = nsHasCrash ? '1 CRASHING' : '';
       const nsSprite = createTextSprite(`ns: ${ns.name}`, nsColor, 14, nsBadge);
+      nsSprite.userData = { isPlaque: true, isIncident: nsHasCrash, kind: 'Namespace' };
       nsSprite.position.set(zoneCenter.x, 1.5, zoneCenter.z - 4.4);
       this.group.add(nsSprite);
+      this.allLabelSprites.push(nsSprite);
 
       this.namespacePlaques.set(`${cluster.name}/${ns.name}`, {
         sprite: nsSprite,
@@ -359,6 +424,8 @@ export class TopologyMesh {
 
       // Pods within this namespace territory
       this._buildPodNodes(ns, zoneCenter, cluster.name);
+      // Stratified 3D controllers & networking resources above pods
+      this._buildNamespaceResources(ns, zoneCenter, cluster.name);
     });
   }
 
@@ -367,13 +434,15 @@ export class TopologyMesh {
     const podCount = pods.length;
     if (podCount === 0) return;
 
+    const s = this.objectScaleFactor || 0.72;
+
     pods.forEach((pod, i) => {
       let px = zoneCenter.x;
       let pz = zoneCenter.z;
 
       if (podCount > 1) {
         const angle = (i / podCount) * Math.PI * 2;
-        const radius = Math.min(3.2, 1.4 + podCount * 0.4);
+        const radius = Math.min(3.1, 1.15 + podCount * 0.28) * Math.max(0.75, s / 0.72);
         px = zoneCenter.x + Math.cos(angle) * radius;
         pz = zoneCenter.z + Math.sin(angle) * radius;
       }
@@ -386,8 +455,8 @@ export class TopologyMesh {
       const podGroup = new THREE.Group();
       podGroup.position.set(px, 1.0, pz);
 
-      // 1. Inner Container (Solid Hexagon - radialSegments: 6)
-      const containerGeo = new THREE.CylinderGeometry(0.55, 0.55, 1.1, 6);
+      // 1. Inner Container (Scaled-down Solid Hexagon - radialSegments: 6)
+      const containerGeo = new THREE.CylinderGeometry(0.35 * s, 0.35 * s, 0.68 * s, 6);
       const containerMat = new THREE.MeshStandardMaterial({
         color: colorScheme.color,
         roughness: 0.35,
@@ -396,7 +465,7 @@ export class TopologyMesh {
         emissiveIntensity: isCrash ? 0.85 : 0.25,
       });
       const containerMesh = new THREE.Mesh(containerGeo, containerMat);
-      containerMesh.position.y = 0.55;
+      containerMesh.position.y = 0.35 * s;
       containerMesh.castShadow = true;
       podGroup.add(containerMesh);
 
@@ -410,16 +479,16 @@ export class TopologyMesh {
       const containerEdges = new THREE.LineSegments(containerEdgesGeo, containerEdgeMat);
       containerMesh.add(containerEdges);
 
-      // 2. Outer Pod Boundary (Dashed Heptagon - radialSegments: 7)
-      const podGeometry = new THREE.CylinderGeometry(0.95, 0.95, 1.45, 7);
+      // 2. Outer Pod Boundary (Scaled-down Dashed Heptagon - radialSegments: 7)
+      const podGeometry = new THREE.CylinderGeometry(0.58 * s, 0.58 * s, 0.88 * s, 7);
       const edges = new THREE.EdgesGeometry(podGeometry);
       const boundaryColor = isCrash ? 0xea4335 : status === 'Pending' ? 0xfbbc04 : 0x326ce5;
       const lineMaterial = new THREE.LineDashedMaterial({
         color: boundaryColor,
         linewidth: 2,
         scale: 1,
-        dashSize: 0.25,
-        gapSize: 0.15,
+        dashSize: 0.18 * s,
+        gapSize: 0.11 * s,
         transparent: true,
         opacity: isCrash ? 0.95 : 0.8,
       });
@@ -430,7 +499,7 @@ export class TopologyMesh {
       // 3. Pulsing alert beacon for CrashLoopBackOff / Failed
       let alertBeacon = null;
       if (isCrash) {
-        const beaconGeo = new THREE.CylinderGeometry(1.2, 1.2, 1.7, 7);
+        const beaconGeo = new THREE.CylinderGeometry(0.74 * s, 0.74 * s, 1.04 * s, 7);
         const beaconEdges = new THREE.EdgesGeometry(beaconGeo);
         const beaconMat = new THREE.LineBasicMaterial({
           color: 0xea4335,
@@ -444,6 +513,7 @@ export class TopologyMesh {
       // Metadata on interactive mesh (containerMesh is raycast target)
       containerMesh.userData = {
         type: 'pod',
+        kind: 'Pod',
         pod: pod,
         namespaceName: ns.name,
         clusterName: clusterName,
@@ -462,17 +532,20 @@ export class TopologyMesh {
         this.crashPods.push(containerMesh);
       }
 
-      // 4. Pod name billboard tag
-      const subtitle = isCrash
-        ? pod.restarts > 0
-          ? `${pod.restarts} restarts`
-          : '1 CRASHING'
-        : pod.restarts > 0
-          ? `${pod.restarts} restarts`
-          : '';
-      const nameSprite = createTextSprite(pod.name, colorScheme.text, 14, subtitle);
-      nameSprite.position.set(0, 1.85, 0);
+      // 4. Pod name billboard tag (sleek, compact label)
+      const shortPodName = pod.name.length > 24 ? pod.name.slice(0, 22) + '…' : pod.name;
+      const subtitle = isCrash ? (pod.restarts > 0 ? `${pod.restarts} restarts` : 'CRASHING') : '';
+      const nameSprite = createTextSprite(shortPodName, colorScheme.text, 12, subtitle);
+      nameSprite.userData = {
+        kind: 'Pod',
+        nodeId: pod.id || pod.name,
+        name: pod.name,
+        isIncident: isCrash || status === 'Pending',
+        isPlaque: false,
+      };
+      nameSprite.position.set(0, 0.58 + 0.45 * s, 0);
       podGroup.add(nameSprite);
+      this.allLabelSprites.push(nameSprite);
 
       // Save references on userData for real-time remediation updates
       containerMesh.userData.nameSprite = nameSprite;
@@ -483,6 +556,250 @@ export class TopologyMesh {
       if (pod.name) this.podMap.set(pod.name, containerMesh);
       if (pod.id) this.podMap.set(pod.id, containerMesh);
     });
+  }
+
+  _buildNamespaceResources(ns, zoneCenter, clusterName) {
+    const resources = ns.resources || [];
+    if (resources.length === 0) return;
+
+    const s = this.objectScaleFactor || 0.72;
+
+    // Sort resources bottom-up so lower tiers (ReplicaSet) are positioned before upper tiers (Deployment -> Service -> Route -> Gateway)
+    const tierElevation = {
+      ReplicaSet: 2.35,
+      Deployment: 3.75,
+      DaemonSet: 3.75,
+      StatefulSet: 3.75,
+      SparkApplication: 3.95,
+      RayCluster: 3.95,
+      Service: 5.25,
+      HTTPRoute: 6.65,
+      Gateway: 8.05,
+    };
+
+    const sorted = [...resources].sort(
+      (a, b) => (tierElevation[a.kind] || 4.0) - (tierElevation[b.kind] || 4.0)
+    );
+
+    sorted.forEach((res, idx) => {
+      const elevation = tierElevation[res.kind] || 4.0;
+      const targets = [...(res.children_ids || []), ...(res.connected_to || [])];
+
+      // Compute centroid of owned children if present
+      let sumX = 0;
+      let sumZ = 0;
+      let matchCount = 0;
+      targets.forEach((tid) => {
+        const childMesh = this.podMap.get(tid) || this.resourceMap.get(tid);
+        if (childMesh && childMesh.userData?.podGroup) {
+          sumX += childMesh.userData.podGroup.position.x;
+          sumZ += childMesh.userData.podGroup.position.z;
+          matchCount++;
+        }
+      });
+
+      let rx = zoneCenter.x;
+      let rz = zoneCenter.z;
+      if (matchCount > 0) {
+        rx = sumX / matchCount;
+        rz = sumZ / matchCount;
+      } else {
+        const angle = (idx / Math.max(1, sorted.length)) * Math.PI * 2;
+        rx = zoneCenter.x + Math.cos(angle) * 2.1;
+        rz = zoneCenter.z + Math.sin(angle) * 2.1;
+      }
+
+      const resGroup = new THREE.Group();
+      resGroup.position.set(rx, elevation, rz);
+
+      const isDegraded =
+        res.status === 'Degraded' || res.status === 'Pending' || res.status === 'CrashLoopBackOff';
+      let colorHex = 0x6366f1;
+      let textColor = '#818cf8';
+      let geo = null;
+
+      switch (res.kind) {
+        case 'ReplicaSet':
+          colorHex = isDegraded ? 0xf59e0b : 0x6366f1;
+          textColor = isDegraded ? '#fbbf24' : '#818cf8';
+          geo = new THREE.OctahedronGeometry(0.36 * s, 0);
+          break;
+        case 'Deployment':
+          colorHex = isDegraded ? 0xea4335 : 0xa855f7;
+          textColor = isDegraded ? '#f87171' : '#c084fc';
+          geo = new THREE.CylinderGeometry(0.42 * s, 0.42 * s, 0.42 * s, 8);
+          break;
+        case 'DaemonSet':
+          colorHex = 0x14b8a6;
+          textColor = '#2dd4bf';
+          geo = new THREE.TorusGeometry(0.38 * s, 0.11 * s, 8, 16);
+          break;
+        case 'StatefulSet':
+          colorHex = 0x3b82f6;
+          textColor = '#60a5fa';
+          geo = new THREE.CylinderGeometry(0.38 * s, 0.38 * s, 0.52 * s, 12);
+          break;
+        case 'Service':
+          colorHex = 0x06b6d4;
+          textColor = '#22d3ee';
+          geo = new THREE.OctahedronGeometry(0.42 * s, 0);
+          break;
+        case 'HTTPRoute':
+          colorHex = 0xec4899;
+          textColor = '#f472b6';
+          geo = new THREE.CylinderGeometry(0.42 * s, 0.42 * s, 0.22 * s, 6);
+          break;
+        case 'Gateway':
+          colorHex = 0xf59e0b;
+          textColor = '#fbbf24';
+          geo = new THREE.TorusGeometry(0.48 * s, 0.13 * s, 10, 20);
+          break;
+        default:
+          colorHex = 0xf43f5e;
+          textColor = '#fb7185';
+          geo = new THREE.IcosahedronGeometry(0.42 * s, 0);
+          break;
+      }
+
+      const mat = new THREE.MeshStandardMaterial({
+        color: colorHex,
+        roughness: 0.3,
+        metalness: 0.45,
+        emissive: colorHex,
+        emissiveIntensity: isDegraded ? 0.65 : 0.3,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      if (res.kind === 'DaemonSet' || res.kind === 'Gateway') {
+        mesh.rotation.x = Math.PI / 2;
+      }
+      resGroup.add(mesh);
+
+      // Wireframe rim
+      const edgeGeo = new THREE.EdgesGeometry(geo);
+      const edgeMat = new THREE.LineBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.32,
+      });
+      mesh.add(new THREE.LineSegments(edgeGeo, edgeMat));
+
+      const kindPrefixes = {
+        ReplicaSet: 'RS',
+        Deployment: 'DEPLOY',
+        DaemonSet: 'DS',
+        StatefulSet: 'STS',
+        SparkApplication: 'SPARK',
+        RayCluster: 'RAY',
+        Service: 'SVC',
+        HTTPRoute: 'ROUTE',
+        Gateway: 'GW',
+      };
+      const prefix = kindPrefixes[res.kind] || res.kind;
+      const shortName = res.name.length > 22 ? res.name.slice(0, 20) + '…' : res.name;
+      const labelText = `${prefix} ${shortName}`;
+      const sprite = createTextSprite(
+        labelText,
+        textColor,
+        12,
+        isDegraded ? res.status || 'DEGRADED' : ''
+      );
+      sprite.userData = {
+        kind: res.kind,
+        nodeId: res.id || res.name,
+        name: res.name,
+        isIncident: isDegraded,
+        isPlaque: false,
+      };
+      sprite.position.set(0, 0.52 * s + 0.22, 0);
+      resGroup.add(sprite);
+      this.allLabelSprites.push(sprite);
+
+      mesh.userData = {
+        type: 'resource',
+        kind: res.kind,
+        resource: res,
+        pod: {
+          id: res.id || res.name,
+          name: res.name,
+          namespace: ns.name,
+          cluster: clusterName,
+          status: res.status || 'Healthy',
+          kind: res.kind,
+          owner_id: res.owner_id,
+          children_ids: res.children_ids || res.connected_to || [],
+        },
+        namespaceName: ns.name,
+        clusterName: clusterName,
+        podGroup: resGroup,
+        containerMesh: mesh,
+        nameSprite: sprite,
+      };
+
+      this.group.add(resGroup);
+      this.resourceMeshes.push(mesh);
+      this.podMeshes.push(mesh); // Allow raycaster selection of controllers/gateways
+      if (res.id) {
+        this.resourceMap.set(res.id, mesh);
+        if (!this.podMap.has(res.id)) {
+          this.podMap.set(res.id, mesh);
+        }
+      }
+      if (res.name) {
+        this.resourceMap.set(res.name, mesh);
+        if (!this.podMap.has(res.name)) {
+          this.podMap.set(res.name, mesh);
+        }
+      }
+    });
+  }
+
+  _buildOwnershipBeams() {
+    const beamColors = {
+      ReplicaSet: 0x818cf8,
+      Deployment: 0xc084fc,
+      DaemonSet: 0x2dd4bf,
+      StatefulSet: 0x60a5fa,
+      Service: 0x22d3ee,
+      HTTPRoute: 0xf472b6,
+      Gateway: 0xfbbf24,
+    };
+
+    for (const resMesh of this.resourceMeshes) {
+      const res = resMesh.userData?.resource;
+      if (!res) continue;
+
+      const targets = res.children_ids?.length ? res.children_ids : res.connected_to || [];
+      const colorHex = beamColors[res.kind] || 0x94a3b8;
+
+      targets.forEach((targetId) => {
+        const childMesh = this.podMap.get(targetId) || this.resourceMap.get(targetId);
+        if (!childMesh || !childMesh.userData?.podGroup || !resMesh.userData?.podGroup) return;
+
+        const start = resMesh.userData.podGroup.position.clone();
+        const end = childMesh.userData.podGroup.position.clone();
+        if (childMesh.userData.type === 'pod') {
+          end.y += 0.55 * (this.objectScaleFactor || 0.72);
+        }
+
+        const geo = new THREE.BufferGeometry().setFromPoints([start, end]);
+        const mat = new THREE.LineBasicMaterial({
+          color: colorHex,
+          transparent: true,
+          opacity: 0.48,
+        });
+        const line = new THREE.Line(geo, mat);
+        this.group.add(line);
+
+        this.ownershipBeams.push({
+          line,
+          parentId: res.id || res.name,
+          childId: targetId,
+          parentKind: res.kind,
+          originalColor: colorHex,
+          originalOpacity: 0.48,
+        });
+      });
+    }
   }
 
   _buildDependencyCurves() {
@@ -509,11 +826,11 @@ export class TopologyMesh {
       if (fromMesh && toMesh) {
         const start = new THREE.Vector3();
         fromMesh.getWorldPosition(start);
-        start.y += 0.7;
+        start.y += 0.5;
 
         const end = new THREE.Vector3();
         toMesh.getWorldPosition(end);
-        end.y += 0.7;
+        end.y += 0.5;
 
         const conduit = this._createCurve(start, end, color, from, to);
         if (!this.podConduits.has(to)) {
@@ -526,7 +843,7 @@ export class TopologyMesh {
 
   _createCurve(start, end, colorHex, from, to) {
     const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-    mid.y += 1.6;
+    mid.y += 1.4;
 
     const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
     const points = curve.getPoints(40);
@@ -545,7 +862,7 @@ export class TopologyMesh {
     const particleCount = 3;
     const startIndex = this.curveParticles.length;
     for (let i = 0; i < particleCount; i++) {
-      const pGeo = new THREE.SphereGeometry(0.1, 8, 8);
+      const pGeo = new THREE.SphereGeometry(0.08, 8, 8);
       const pMat = new THREE.MeshBasicMaterial({
         color: colorHex,
         transparent: true,
@@ -581,18 +898,40 @@ export class TopologyMesh {
   }
 
   /**
-   * Updates animations for glowing nodes, crash beacons, and dependency flow.
+   * Updates animations for glowing nodes, crash beacons, dependency flow, and LOD culling.
    * @param {number} time
+   * @param {THREE.Camera} [camera]
    */
-  update(time) {
-    // Subtle idle rotation of the dashed heptagonal boundary (as specified in docs/design/3d-pods.md)
+  update(time, camera) {
+    this._lastCamera = camera || this._lastCamera;
+
+    // 1. Live FPS telemetry calculation
+    const now = performance.now();
+    const delta = now - this._lastFrameTime;
+    this._lastFrameTime = now;
+    if (delta > 0 && delta < 500) {
+      const instFps = 1000 / delta;
+      this._frameSamples.push(instFps);
+      if (this._frameSamples.length > 30) {
+        this._frameSamples.shift();
+      }
+      const avg = this._frameSamples.reduce((acc, v) => acc + v, 0) / this._frameSamples.length;
+      this.stats.fps = Math.min(60, Math.round(avg));
+    }
+
+    // 2. Smart contextual & distance-based LOD label visibility
+    this._applyLabelVisibility(camera || this._lastCamera);
+
+    // 3. Subtle idle rotation of dashed heptagonal boundary and resource controllers
     for (const mesh of this.podMeshes) {
       if (mesh.userData && mesh.userData.podBoundary) {
         mesh.userData.podBoundary.rotation.y = time * 0.0006;
+      } else if (mesh.userData && mesh.userData.type === 'resource') {
+        mesh.rotation.y = time * 0.0008;
       }
     }
 
-    // Pulse crash beacons
+    // 4. Pulse crash beacons
     const pulseFactor = (Math.sin(time * 0.005) + 1) / 2;
     for (const mesh of this.crashPods) {
       if (mesh.userData && mesh.userData.alertBeacon) {
@@ -605,7 +944,7 @@ export class TopologyMesh {
       }
     }
 
-    // Animate data flow particles along conduits, respecting traffic drain
+    // 5. Animate data flow particles along conduits, respecting traffic drain
     for (const p of this.curveParticles) {
       const speedFactor = p.conduit?.flowSpeedFactor ?? 1.0;
       if (speedFactor <= 0.05) {
@@ -618,7 +957,7 @@ export class TopologyMesh {
       p.mesh.position.copy(pos);
     }
 
-    // Rotate active 3D selection targeting reticle
+    // 6. Rotate active 3D selection targeting reticle
     if (this.selectionReticle) {
       this.selectionReticle.rotation.z = time * 0.0018;
     }
@@ -922,8 +1261,9 @@ export class TopologyMesh {
 
     const ringColor = isCrash ? 0xea4335 : 0x4285f4;
     const reticleGroup = new THREE.Group();
+    const s = this.objectScaleFactor || 0.72;
 
-    const outerGeo = new THREE.RingGeometry(1.28, 1.44, 32);
+    const outerGeo = new THREE.RingGeometry(0.95 * s, 1.08 * s, 32);
     const outerMat = new THREE.MeshBasicMaterial({
       color: ringColor,
       side: THREE.DoubleSide,
@@ -933,7 +1273,7 @@ export class TopologyMesh {
     const outerRing = new THREE.Mesh(outerGeo, outerMat);
     reticleGroup.add(outerRing);
 
-    const innerGeo = new THREE.RingGeometry(1.08, 1.15, 6);
+    const innerGeo = new THREE.RingGeometry(0.78 * s, 0.85 * s, 6);
     const innerMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       side: THREE.DoubleSide,
@@ -944,10 +1284,13 @@ export class TopologyMesh {
     reticleGroup.add(innerRing);
 
     reticleGroup.rotation.x = -Math.PI / 2;
-    reticleGroup.position.set(0, -0.52, 0);
+    reticleGroup.position.set(0, -0.35 * s, 0);
 
     targetMesh.userData.podGroup.add(reticleGroup);
     this.selectionReticle = reticleGroup;
+
+    // Automatically highlight vertical/horizontal ownership chain on selection
+    this.highlightOwnershipChain(podId);
   }
 
   /**
@@ -965,6 +1308,278 @@ export class TopologyMesh {
       this.selectionReticle = null;
     }
     this.selectedPodMesh = null;
+    this.clearOwnershipHighlight();
+  }
+
+  /**
+   * Sets 3D label visibility mode ('hover-trouble' | 'smart' | 'all' | 'off' | 'minimal').
+   * @param {string} mode
+   */
+  setLabelMode(mode = 'hover-trouble') {
+    this.labelMode = mode || 'hover-trouble';
+    this.stats.labelMode = this.labelMode;
+    this._applyLabelVisibility(this._lastCamera);
+  }
+
+  /**
+   * Updates the currently hovered 3D node from pointer flyover raycasting.
+   * Immediately reveals the hovered node's label and its connected vertical ownership chain.
+   * @param {object|null} userData
+   */
+  setHoveredNode(userData) {
+    if (!userData) {
+      this.hoveredNodeId = null;
+      this.hoveredChainIds.clear();
+      this._updateBeamHighlights();
+      this._applyLabelVisibility(this._lastCamera);
+      return;
+    }
+
+    const podObj = userData.pod || userData.resource || userData;
+    const nodeId = podObj.id || podObj.name || null;
+    this.hoveredNodeId = nodeId;
+    this.hoveredChainIds = nodeId ? this._computeChainIds(nodeId) : new Set();
+    this._updateBeamHighlights();
+    this._applyLabelVisibility(this._lastCamera);
+  }
+
+  /**
+   * Computes the set of node IDs and names in the vertical ownership chain for a given target ID.
+   * @param {string} targetId
+   * @returns {Set<string>}
+   */
+  _computeChainIds(targetId) {
+    const chainIds = new Set();
+    if (!targetId) return chainIds;
+
+    let startMesh = this.podMap.get(targetId) || this.resourceMap.get(targetId);
+    if (!startMesh) {
+      for (const [key, mesh] of this.podMap.entries()) {
+        if (typeof key === 'string' && (key.includes(targetId) || targetId.includes(key))) {
+          startMesh = mesh;
+          break;
+        }
+      }
+    }
+    if (!startMesh || !startMesh.userData) return chainIds;
+
+    const visitedUp = new Set();
+    const addNodeAndAncestors = (mesh) => {
+      if (!mesh || !mesh.userData || visitedUp.has(mesh)) return;
+      visitedUp.add(mesh);
+      const podObj = mesh.userData.pod || {};
+      const id = podObj.id || podObj.name;
+      if (id) chainIds.add(id);
+      if (podObj.name) chainIds.add(podObj.name);
+      if (podObj.owner_id) {
+        chainIds.add(podObj.owner_id);
+        const parentMesh =
+          this.resourceMap.get(podObj.owner_id) || this.podMap.get(podObj.owner_id);
+        if (parentMesh && parentMesh !== mesh) {
+          addNodeAndAncestors(parentMesh);
+        }
+      }
+    };
+
+    const visitedDown = new Set();
+    const addNodeAndDescendants = (mesh) => {
+      if (!mesh || !mesh.userData || visitedDown.has(mesh)) return;
+      visitedDown.add(mesh);
+      const podObj = mesh.userData.pod || {};
+      const children = podObj.children_ids || [];
+      children.forEach((cid) => {
+        chainIds.add(cid);
+        const childMesh = this.podMap.get(cid) || this.resourceMap.get(cid);
+        if (childMesh && childMesh !== mesh) {
+          addNodeAndDescendants(childMesh);
+        }
+      });
+    };
+
+    addNodeAndAncestors(startMesh);
+    addNodeAndDescendants(startMesh);
+    return chainIds;
+  }
+
+  _updateBeamHighlights() {
+    const combinedChain = new Set([...this.activeChainIds, ...this.hoveredChainIds]);
+    const hasHighlight = combinedChain.size > 1;
+
+    for (const beam of this.ownershipBeams) {
+      if (!beam.line || !beam.line.material) continue;
+      if (!hasHighlight) {
+        beam.line.material.color.setHex(beam.originalColor);
+        beam.line.material.opacity = beam.originalOpacity;
+      } else {
+        const inChain = combinedChain.has(beam.parentId) && combinedChain.has(beam.childId);
+        beam.line.material.color.setHex(inChain ? 0x38bdf8 : beam.originalColor);
+        beam.line.material.opacity = inChain ? 0.95 : 0.14;
+      }
+    }
+  }
+
+  /**
+   * Evaluates smart contextual label visibility, pointer flyover hover, and zoom distance across all 3D sprites.
+   * @param {THREE.Camera} [camera]
+   */
+  _applyLabelVisibility(camera) {
+    const worldPos = new THREE.Vector3();
+    const intermediateKinds = new Set(['ReplicaSet', 'DaemonSet', 'Service', 'HTTPRoute']);
+
+    for (const sprite of this.allLabelSprites) {
+      if (!sprite || !sprite.parent) continue;
+      if (!sprite.parent.visible) {
+        sprite.visible = false;
+        continue;
+      }
+
+      const data = sprite.userData || {};
+      if (data.isPlaque) {
+        sprite.visible = true;
+        continue;
+      }
+
+      const isSelected = Boolean(
+        this.selectedPodMesh && this.selectedPodMesh.userData?.nameSprite === sprite
+      );
+      const isHovered = Boolean(
+        this.hoveredNodeId &&
+        (data.nodeId === this.hoveredNodeId || data.name === this.hoveredNodeId)
+      );
+      const inChain = Boolean(
+        (data.nodeId &&
+          (this.activeChainIds.has(data.nodeId) || this.hoveredChainIds.has(data.nodeId))) ||
+        (data.name && (this.activeChainIds.has(data.name) || this.hoveredChainIds.has(data.name)))
+      );
+      const isIncident = Boolean(data.isIncident);
+
+      let dist = 28;
+      if (camera) {
+        sprite.getWorldPosition(worldPos);
+        dist = camera.position.distanceTo(worldPos);
+      }
+
+      // 1. 'off': Disable all node labels except active pointer flyover hover
+      if (this.labelMode === 'off') {
+        sprite.visible = isHovered || isSelected;
+        continue;
+      }
+
+      // 2. 'hover-trouble' (Default) or 'minimal':
+      // Show resources in trouble (CrashLoopBackOff / Degraded / Pending), active flyover/selection chains,
+      // OR when the camera is zoomed in close (dist < 18 world units)
+      if (this.labelMode === 'hover-trouble' || this.labelMode === 'minimal') {
+        const isZoomedInClose = dist < 18;
+        sprite.visible = isIncident || isHovered || isSelected || inChain || isZoomedInClose;
+        continue;
+      }
+
+      // 3. 'all': Show all labels within distance LOD
+      if (this.labelMode === 'all') {
+        const maxDist = this.stats.totalObjects > 300 ? 52 : 85;
+        sprite.visible = dist < maxDist || isIncident || isHovered || isSelected || inChain;
+        continue;
+      }
+
+      // 4. 'smart': Show incidents, hovered/selected chains, and close primary workloads
+      if (isIncident || isHovered || isSelected || inChain) {
+        sprite.visible = true;
+        continue;
+      }
+
+      if (this.activeLayerFilter === 'hierarchy' || this.activeLayerFilter === 'networking') {
+        sprite.visible = dist < 44;
+        continue;
+      }
+
+      if (intermediateKinds.has(data.kind)) {
+        sprite.visible = dist < 18;
+      } else {
+        const maxSmartDist = this.stats.totalObjects > 250 ? 28 : 36;
+        sprite.visible = dist < maxSmartDist;
+      }
+    }
+  }
+
+  /**
+   * Filters visible 3D stack tiers ('all' | 'hierarchy' | 'networking' | 'pods').
+   * @param {string} mode
+   */
+  setLayerFilter(mode = 'all') {
+    this.activeLayerFilter = mode || 'all';
+    this.stats.activeLayer = this.activeLayerFilter;
+
+    const hierarchyKinds = new Set([
+      'Deployment',
+      'ReplicaSet',
+      'DaemonSet',
+      'StatefulSet',
+      'SparkApplication',
+      'RayCluster',
+    ]);
+    const networkingKinds = new Set(['Gateway', 'HTTPRoute', 'Service']);
+
+    for (const mesh of this.podMeshes) {
+      if (!mesh.userData) continue;
+      const kind = mesh.userData.kind || 'Pod';
+      let visible = true;
+
+      if (this.activeLayerFilter === 'pods') {
+        visible = kind === 'Pod';
+      } else if (this.activeLayerFilter === 'hierarchy') {
+        visible = kind === 'Pod' || hierarchyKinds.has(kind);
+      } else if (this.activeLayerFilter === 'networking') {
+        visible = kind === 'Pod' || networkingKinds.has(kind);
+      }
+
+      if (mesh.userData.podGroup) {
+        mesh.userData.podGroup.visible = visible;
+      } else {
+        mesh.visible = visible;
+      }
+    }
+
+    for (const beam of this.ownershipBeams) {
+      if (!beam.line) continue;
+      if (this.activeLayerFilter === 'pods') {
+        beam.line.visible = false;
+      } else if (this.activeLayerFilter === 'hierarchy') {
+        beam.line.visible = hierarchyKinds.has(beam.parentKind);
+      } else if (this.activeLayerFilter === 'networking') {
+        beam.line.visible = networkingKinds.has(beam.parentKind);
+      } else {
+        beam.line.visible = true;
+      }
+    }
+
+    this._applyLabelVisibility(this._lastCamera);
+  }
+
+  /**
+   * Highlights the vertical ownership and traffic chain connected to a target node.
+   * @param {string} targetId
+   */
+  highlightOwnershipChain(targetId) {
+    this.clearOwnershipHighlight();
+    if (!targetId) return;
+
+    this.activeChainIds = this._computeChainIds(targetId);
+    this._updateBeamHighlights();
+    this._applyLabelVisibility(this._lastCamera);
+  }
+
+  clearOwnershipHighlight() {
+    this.activeChainIds.clear();
+    this._updateBeamHighlights();
+    this._applyLabelVisibility(this._lastCamera);
+  }
+
+  /**
+   * Returns live FPS, object counts, and active 3D layer stats.
+   * @returns {{fps: number, totalObjects: number, clusterCount: number, podCount: number, resourceCount: number, activeLayer: string}}
+   */
+  getPerformanceStats() {
+    return { ...this.stats };
   }
 
   /**
@@ -1032,14 +1647,18 @@ export class TopologyMesh {
     }
 
     this.podMeshes = [];
+    this.resourceMeshes = [];
     this.crashPods = [];
     this.clusterMonoliths = [];
     this.curveParticles = [];
+    this.ownershipBeams = [];
+    this.allLabelSprites = [];
     this.conduits = [];
     this.blastRadiusPods.clear();
     this.blastRadiusConduits.clear();
     this.trafficDrainMap.clear();
     this.podMap.clear();
+    this.resourceMap.clear();
     this.clusterPositions.clear();
     this.clusterPlaques.clear();
     this.clusterSlits.clear();

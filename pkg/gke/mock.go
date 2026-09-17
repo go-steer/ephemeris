@@ -247,6 +247,8 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Restarts:    0,
 								CPUUsage:    "120m",
 								MemoryUsage: "256Mi",
+								OwnerID:     "rs-frontend-6b7d9",
+								OwnerKind:   "ReplicaSet",
 								Dependencies: []string{
 									"pod-cart-service-5f8c2",
 									"pod-catalog-service-7d4a1",
@@ -262,6 +264,8 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Restarts:    1,
 								CPUUsage:    "80m",
 								MemoryUsage: "180Mi",
+								OwnerID:     "rs-cart-service-5f8c2",
+								OwnerKind:   "ReplicaSet",
 								Dependencies: []string{
 									"pod-redis-cart-6d9a2",
 								},
@@ -276,6 +280,8 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Restarts:     0,
 								CPUUsage:     "95m",
 								MemoryUsage:  "512Mi",
+								OwnerID:      "sts-redis-cart",
+								OwnerKind:    "StatefulSet",
 								Dependencies: nil,
 								Labels:       map[string]string{"app": "redis-cart", "tier": "cache"},
 							},
@@ -288,6 +294,8 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Restarts:    0,
 								CPUUsage:    "190m",
 								MemoryUsage: "320Mi",
+								OwnerID:     "rs-checkout-service-9a1b3",
+								OwnerKind:   "ReplicaSet",
 								Dependencies: []string{
 									"pod-payment-service-84f7b6",
 								},
@@ -302,6 +310,8 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Restarts:     0,
 								CPUUsage:     "60m",
 								MemoryUsage:  "150Mi",
+								OwnerID:      "rs-catalog-service-7d4a1",
+								OwnerKind:    "ReplicaSet",
 								Dependencies: nil,
 								Labels:       map[string]string{"app": "catalog-service", "tier": "backend"},
 							},
@@ -314,6 +324,8 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Restarts:     14,
 								CPUUsage:     "980m",
 								MemoryUsage:  "1.8Gi",
+								OwnerID:      "rs-payment-service-84f7b6",
+								OwnerKind:    "ReplicaSet",
 								Dependencies: nil,
 								Labels:       map[string]string{"app": "payment-service", "tier": "critical-backend"},
 							},
@@ -353,6 +365,17 @@ func buildDefaultMockTopology() *api.TopologyData {
 								ConnectedTo: []string{"deploy-payment-service"},
 							},
 							{
+								ID:          "svc-checkout-service",
+								Kind:        "Service",
+								APIVersion:  "v1",
+								Name:        "checkout-service",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Healthy",
+								Summary:     "ClusterIP 10.96.42.19:8080 -> selector app=checkout-service (1/1 ready endpoints)",
+								ConnectedTo: []string{"deploy-checkout-service"},
+							},
+							{
 								ID:          "deploy-payment-service",
 								Kind:        "Deployment",
 								APIVersion:  "apps/v1",
@@ -362,6 +385,22 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Status:      "CrashLoopBackOff",
 								Replicas:    "0/1",
 								Summary:     "RollingUpdate (image: gcr.io/boutique/payment:v2.1.4) — replica crashing on SIGSEGV at server.go:142",
+								ChildrenIDs: []string{"rs-payment-service-84f7b6"},
+								ConnectedTo: []string{"rs-payment-service-84f7b6"},
+							},
+							{
+								ID:          "rs-payment-service-84f7b6",
+								Kind:        "ReplicaSet",
+								APIVersion:  "apps/v1",
+								Name:        "payment-service-84f7b6",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "CrashLoopBackOff",
+								Replicas:    "0/1",
+								OwnerID:     "deploy-payment-service",
+								OwnerKind:   "Deployment",
+								ChildrenIDs: []string{"pod-payment-service-84f7b6"},
+								Summary:     "Active ReplicaSet rev=12 owned by Deployment/payment-service (pod in CrashLoopBackOff)",
 								ConnectedTo: []string{"pod-payment-service-84f7b6"},
 							},
 							{
@@ -374,6 +413,22 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Status:      "Healthy",
 								Replicas:    "1/1",
 								Summary:     "Next.js edge storefront serving ingress traffic from boutique-gateway",
+								ChildrenIDs: []string{"rs-frontend-6b7d9"},
+								ConnectedTo: []string{"rs-frontend-6b7d9"},
+							},
+							{
+								ID:          "rs-frontend-6b7d9",
+								Kind:        "ReplicaSet",
+								APIVersion:  "apps/v1",
+								Name:        "frontend-6b7d9",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Healthy",
+								Replicas:    "1/1",
+								OwnerID:     "deploy-frontend",
+								OwnerKind:   "Deployment",
+								ChildrenIDs: []string{"pod-frontend-6b7d9"},
+								Summary:     "Active ReplicaSet rev=4 owned by Deployment/frontend",
 								ConnectedTo: []string{"pod-frontend-6b7d9"},
 							},
 							{
@@ -386,6 +441,22 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Status:      "Healthy",
 								Replicas:    "1/1",
 								Summary:     "Cart state API connected to StatefulSet redis-cart:6379",
+								ChildrenIDs: []string{"rs-cart-service-5f8c2"},
+								ConnectedTo: []string{"rs-cart-service-5f8c2"},
+							},
+							{
+								ID:          "rs-cart-service-5f8c2",
+								Kind:        "ReplicaSet",
+								APIVersion:  "apps/v1",
+								Name:        "cart-service-5f8c2",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Healthy",
+								Replicas:    "1/1",
+								OwnerID:     "deploy-cart-service",
+								OwnerKind:   "Deployment",
+								ChildrenIDs: []string{"pod-cart-service-5f8c2"},
+								Summary:     "Active ReplicaSet rev=7 owned by Deployment/cart-service",
 								ConnectedTo: []string{"pod-cart-service-5f8c2"},
 							},
 							{
@@ -398,6 +469,22 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Status:      "Healthy",
 								Replicas:    "1/1",
 								Summary:     "Order checkout orchestrator calling payment-service and cart-service",
+								ChildrenIDs: []string{"rs-checkout-service-9a1b3"},
+								ConnectedTo: []string{"rs-checkout-service-9a1b3"},
+							},
+							{
+								ID:          "rs-checkout-service-9a1b3",
+								Kind:        "ReplicaSet",
+								APIVersion:  "apps/v1",
+								Name:        "checkout-service-9a1b3",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Healthy",
+								Replicas:    "1/1",
+								OwnerID:     "deploy-checkout-service",
+								OwnerKind:   "Deployment",
+								ChildrenIDs: []string{"pod-checkout-service-9a1b3"},
+								Summary:     "Active ReplicaSet rev=5 owned by Deployment/checkout-service",
 								ConnectedTo: []string{"pod-checkout-service-9a1b3"},
 							},
 							{
@@ -409,8 +496,21 @@ func buildDefaultMockTopology() *api.TopologyData {
 								Cluster:     "production-us-central1",
 								Status:      "Healthy",
 								Replicas:    "1/1",
+								ChildrenIDs: []string{"pod-redis-cart-6d9a2"},
 								Summary:     "Persistent Redis cache (volumeClaimTemplates: redis-data-pvc 10Gi ssd-pd)",
 								ConnectedTo: []string{"pod-redis-cart-6d9a2"},
+							},
+							{
+								ID:          "ds-node-exporter",
+								Kind:        "DaemonSet",
+								APIVersion:  "apps/v1",
+								Name:        "prometheus-node-exporter",
+								Namespace:   "production",
+								Cluster:     "production-us-central1",
+								Status:      "Healthy",
+								Replicas:    "3/3 Nodes",
+								Summary:     "Node-level hardware & kernel metrics DaemonSet agent running on all cluster nodes",
+								ConnectedTo: []string{"pod-frontend-6b7d9"},
 							},
 						},
 					},
@@ -652,4 +752,257 @@ func buildDefaultMockTopology() *api.TopologyData {
 			},
 		},
 	}
+}
+
+// ApplyScaleTest procedurally generates a synthetic multi-cluster GKE fleet topology
+// with full Gateway -> HTTPRoute -> Service -> Deployment -> ReplicaSet -> Pod and DaemonSet
+// hierarchies for scale stress-testing (Standard ~45 obj, Medium ~240 obj, Large 600+ obj).
+func (m *MockProvider) ApplyScaleTest(_ context.Context, cfg api.ScaleTestConfig) (*api.TopologyData, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	preset := strings.ToLower(strings.TrimSpace(cfg.Preset))
+	if preset == "reset" || (preset == "standard" && cfg.Clusters == 0) {
+		m.topology = buildDefaultMockTopology()
+		return m.topology, nil
+	}
+
+	if cfg.Clusters <= 0 {
+		switch preset {
+		case "medium":
+			cfg.Clusters = 6
+			cfg.NamespacesPerCluster = 3
+			cfg.DeploymentsPerNS = 3
+			cfg.ReplicasPerDeployment = 2
+		case "large":
+			cfg.Clusters = 12
+			cfg.NamespacesPerCluster = 4
+			cfg.DeploymentsPerNS = 2
+			cfg.ReplicasPerDeployment = 3
+		default:
+			m.topology = buildDefaultMockTopology()
+			return m.topology, nil
+		}
+	}
+
+	m.topology = generateSyntheticScaleTopology(cfg)
+	return m.topology, nil
+}
+
+func generateSyntheticScaleTopology(cfg api.ScaleTestConfig) *api.TopologyData {
+	regions := []string{
+		"us-central1", "us-east4", "us-west1", "europe-west1",
+		"europe-west4", "asia-east1", "asia-northeast1", "southamerica-east1",
+		"australia-southeast1", "me-central1", "northamerica-northeast1", "europe-north1",
+	}
+	nsTemplates := []string{"production", "payments", "checkout", "analytics", "auth-mesh", "realtime"}
+	appTemplates := []string{"api-gateway", "order-processor", "fraud-engine", "ledger-sync", "inventory-worker", "recommendation-ai"}
+
+	if cfg.NamespacesPerCluster <= 0 {
+		cfg.NamespacesPerCluster = 3
+	}
+	if cfg.DeploymentsPerNS <= 0 {
+		cfg.DeploymentsPerNS = 2
+	}
+	if cfg.ReplicasPerDeployment <= 0 {
+		cfg.ReplicasPerDeployment = 2
+	}
+
+	clusters := make([]api.ClusterNode, 0, cfg.Clusters)
+	for cIdx := 0; cIdx < cfg.Clusters; cIdx++ {
+		region := regions[cIdx%len(regions)]
+		clusterName := fmt.Sprintf("fleet-%02d-%s", cIdx+1, region)
+		namespaces := make([]api.NamespaceNode, 0, cfg.NamespacesPerCluster)
+
+		for nIdx := 0; nIdx < cfg.NamespacesPerCluster; nIdx++ {
+			nsName := nsTemplates[nIdx%len(nsTemplates)]
+			if nIdx >= len(nsTemplates) {
+				nsName = fmt.Sprintf("%s-%d", nsName, nIdx)
+			}
+
+			var pods []api.PodNode
+			var resources []api.K8sResource
+			var routeTargets []string
+			var allNSPodIDs []string
+
+			gwID := fmt.Sprintf("gw-%s-%s", clusterName, nsName)
+			routeID := fmt.Sprintf("route-%s-%s", clusterName, nsName)
+
+			for dIdx := 0; dIdx < cfg.DeploymentsPerNS; dIdx++ {
+				appName := appTemplates[(nIdx+dIdx)%len(appTemplates)]
+				svcID := fmt.Sprintf("svc-%s-%s-%s", clusterName, nsName, appName)
+				deployID := fmt.Sprintf("deploy-%s-%s-%s", clusterName, nsName, appName)
+				rsID := fmt.Sprintf("rs-%s-%s-%s-7f9b", clusterName, nsName, appName)
+
+				routeTargets = append(routeTargets, svcID)
+
+				var podIDs []string
+				hasDegraded := (cIdx+nIdx+dIdx)%11 == 0
+				deployStatus := "Healthy"
+				if hasDegraded {
+					deployStatus = "Degraded"
+				}
+
+				for pIdx := 0; pIdx < cfg.ReplicasPerDeployment; pIdx++ {
+					podID := fmt.Sprintf("pod-%s-%s-%s-%d", clusterName, nsName, appName, pIdx+1)
+					podName := fmt.Sprintf("%s-%d", appName, pIdx+1)
+					podStatus := api.StatusRunning
+					restarts := 0
+					cpu := fmt.Sprintf("%dm", 45+(pIdx*25)%180)
+					mem := fmt.Sprintf("%dMi", 110+(pIdx*64)%380)
+
+					if hasDegraded && pIdx == 0 {
+						podStatus = api.StatusError
+						restarts = 9
+						cpu = "880m"
+						mem = "512Mi"
+					} else if (cIdx+nIdx+pIdx)%19 == 0 {
+						podStatus = api.StatusPending
+						cpu = "0m"
+						mem = "0Mi"
+					}
+
+					var deps []string
+					if len(allNSPodIDs) > 0 {
+						deps = []string{allNSPodIDs[len(allNSPodIDs)-1]}
+					}
+
+					pods = append(pods, api.PodNode{
+						ID:           podID,
+						Name:         podName,
+						Namespace:    nsName,
+						Cluster:      clusterName,
+						Status:       podStatus,
+						Restarts:     restarts,
+						CPUUsage:     cpu,
+						MemoryUsage:  mem,
+						OwnerID:      rsID,
+						OwnerKind:    "ReplicaSet",
+						Dependencies: deps,
+						Labels: map[string]string{
+							"app":     appName,
+							"cluster": clusterName,
+							"tier":    "microservice",
+						},
+					})
+					podIDs = append(podIDs, podID)
+					allNSPodIDs = append(allNSPodIDs, podID)
+				}
+
+				// Service
+				resources = append(resources, api.K8sResource{
+					ID:          svcID,
+					Kind:        "Service",
+					APIVersion:  "v1",
+					Name:        appName,
+					Namespace:   nsName,
+					Cluster:     clusterName,
+					Status:      deployStatus,
+					Replicas:    fmt.Sprintf("%d/%d endpoints", len(podIDs), len(podIDs)),
+					OwnerID:     routeID,
+					OwnerKind:   "HTTPRoute",
+					ChildrenIDs: []string{deployID},
+					ConnectedTo: podIDs,
+					Summary:     fmt.Sprintf("ClusterIP service routing to %s pods", appName),
+				})
+
+				// Deployment
+				resources = append(resources, api.K8sResource{
+					ID:          deployID,
+					Kind:        "Deployment",
+					APIVersion:  "apps/v1",
+					Name:        appName,
+					Namespace:   nsName,
+					Cluster:     clusterName,
+					Status:      deployStatus,
+					Replicas:    fmt.Sprintf("%d/%d", len(podIDs), len(podIDs)),
+					OwnerID:     svcID,
+					OwnerKind:   "Service",
+					ChildrenIDs: []string{rsID},
+					ConnectedTo: podIDs,
+					Summary:     fmt.Sprintf("Managed workload deployment (%s)", appName),
+				})
+
+				// ReplicaSet
+				resources = append(resources, api.K8sResource{
+					ID:          rsID,
+					Kind:        "ReplicaSet",
+					APIVersion:  "apps/v1",
+					Name:        fmt.Sprintf("%s-7f9b", appName),
+					Namespace:   nsName,
+					Cluster:     clusterName,
+					Status:      deployStatus,
+					Replicas:    fmt.Sprintf("%d/%d", len(podIDs), len(podIDs)),
+					OwnerID:     deployID,
+					OwnerKind:   "Deployment",
+					ChildrenIDs: podIDs,
+					ConnectedTo: podIDs,
+					Summary:     fmt.Sprintf("Active ReplicaSet revision for %s", appName),
+				})
+			}
+
+			// Gateway
+			resources = append(resources, api.K8sResource{
+				ID:          gwID,
+				Kind:        "Gateway",
+				APIVersion:  "gateway.networking.k8s.io/v1",
+				Name:        fmt.Sprintf("%s-ingress-gw", nsName),
+				Namespace:   nsName,
+				Cluster:     clusterName,
+				Status:      "Healthy",
+				Replicas:    "1/1 Listeners",
+				ChildrenIDs: []string{routeID},
+				ConnectedTo: []string{routeID},
+				Summary:     fmt.Sprintf("GKE Gateway L7 Regional Load Balancer (%s)", region),
+			})
+
+			// HTTPRoute
+			resources = append(resources, api.K8sResource{
+				ID:          routeID,
+				Kind:        "HTTPRoute",
+				APIVersion:  "gateway.networking.k8s.io/v1",
+				Name:        fmt.Sprintf("%s-mesh-route", nsName),
+				Namespace:   nsName,
+				Cluster:     clusterName,
+				Status:      "Healthy",
+				Replicas:    fmt.Sprintf("%d Rules", len(routeTargets)),
+				OwnerID:     gwID,
+				OwnerKind:   "Gateway",
+				ChildrenIDs: routeTargets,
+				ConnectedTo: routeTargets,
+				Summary:     fmt.Sprintf("L7 traffic split across %d namespace services", len(routeTargets)),
+			})
+
+			// DaemonSet
+			dsID := fmt.Sprintf("ds-node-agent-%s-%s", clusterName, nsName)
+			resources = append(resources, api.K8sResource{
+				ID:          dsID,
+				Kind:        "DaemonSet",
+				APIVersion:  "apps/v1",
+				Name:        "otel-node-agent",
+				Namespace:   nsName,
+				Cluster:     clusterName,
+				Status:      "Healthy",
+				Replicas:    "100% Nodes",
+				ChildrenIDs: allNSPodIDs,
+				ConnectedTo: allNSPodIDs,
+				Summary:     "eBPF kernel & telemetry DaemonSet agent",
+			})
+
+			namespaces = append(namespaces, api.NamespaceNode{
+				Name:      nsName,
+				Pods:      pods,
+				Resources: resources,
+			})
+		}
+
+		clusters = append(clusters, api.ClusterNode{
+			Name:       clusterName,
+			ProjectID:  fmt.Sprintf("ephemeris-scale-%02d", cIdx+1),
+			Location:   region,
+			Namespaces: namespaces,
+		})
+	}
+
+	return &api.TopologyData{Clusters: clusters}
 }

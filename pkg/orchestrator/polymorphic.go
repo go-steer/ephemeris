@@ -35,6 +35,7 @@ const (
 	ArchetypeResourceLeaderboard UIArchetype = "resource_leaderboard"
 	ArchetypeDeepTriageCockpit   UIArchetype = "deep_triage"
 	ArchetypeChaosScenario       UIArchetype = "chaos_scenario"
+	ArchetypeScaleBenchmark      UIArchetype = "scale_benchmark"
 	ArchetypeDynamicCustom       UIArchetype = "dynamic_custom"
 )
 
@@ -72,6 +73,12 @@ func extractKindsFromPrompt(p string) []string {
 	if strings.Contains(pLower, "deployment") {
 		addKind("Deployment")
 	}
+	if strings.Contains(pLower, "replicaset") || strings.Contains(pLower, "replica set") {
+		addKind("ReplicaSet")
+	}
+	if strings.Contains(pLower, "daemonset") || strings.Contains(pLower, "daemon set") {
+		addKind("DaemonSet")
+	}
 	if strings.Contains(pLower, "statefulset") {
 		addKind("StatefulSet")
 	}
@@ -98,7 +105,18 @@ func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArc
 		uri = strings.ToLower(telemetry.ResourceURI)
 	}
 
-	// 0. Chaos Scenario Injection requests ("inject redis oom", "simulate traffic spike", "reset all clusters to healthy")
+	// 0. Scale Stress-Test requests ("run scale test", "stress test 10 clusters", "600 objects")
+	if strings.Contains(p, "scale test") || strings.Contains(p, "stress test") || strings.Contains(p, "scale benchmark") || strings.Contains(p, "600 objects") || strings.Contains(p, "12 clusters") {
+		if strings.Contains(p, "large") || strings.Contains(p, "600") || strings.Contains(p, "12") || strings.Contains(p, "10") {
+			return ArchetypeScaleBenchmark, "large"
+		}
+		if strings.Contains(p, "medium") || strings.Contains(p, "180") || strings.Contains(p, "6") {
+			return ArchetypeScaleBenchmark, "medium"
+		}
+		return ArchetypeScaleBenchmark, "standard"
+	}
+
+	// 0a. Chaos Scenario Injection requests ("inject redis oom", "simulate traffic spike", "reset all clusters to healthy")
 	if strings.Contains(p, "inject ") || strings.Contains(p, "simulate ") || strings.Contains(p, "redis oom") || strings.Contains(p, "oom cascade") || strings.Contains(p, "black friday") || strings.Contains(p, "traffic spike") || strings.Contains(p, "reset to healthy") || strings.Contains(p, "all healthy") {
 		if strings.Contains(p, "redis") || strings.Contains(p, "oom") {
 			return ArchetypeChaosScenario, "redis-oom"
@@ -572,7 +590,7 @@ func synthesizeK8sResourcesUI(allScope []api.K8sResource, targetCluster string, 
 		}
 	}
 
-	canonicalOrder := []string{"Gateway", "HTTPRoute", "Deployment", "StatefulSet", "Service", "SparkApplication", "RayCluster"}
+	canonicalOrder := []string{"Gateway", "HTTPRoute", "Service", "Deployment", "ReplicaSet", "DaemonSet", "StatefulSet", "SparkApplication", "RayCluster"}
 	seenKinds := make(map[string]bool)
 	var availableKinds []string
 
@@ -918,4 +936,130 @@ const template = html`+"`"+`
 
 template(container);
 `, string(listJSON))
+}
+
+// synthesizeScaleBenchmarkUI generates an ArrowJS Spatial Hierarchy & Scale Stress-Test cockpit.
+func synthesizeScaleBenchmarkUI(topology *api.TopologyData, preset string) string {
+	clusterCount := 0
+	nsCount := 0
+	podCount := 0
+	counts := map[string]int{
+		"Gateway":     0,
+		"HTTPRoute":   0,
+		"Service":     0,
+		"Deployment":  0,
+		"ReplicaSet":  0,
+		"DaemonSet":   0,
+		"StatefulSet": 0,
+	}
+
+	if topology != nil {
+		clusterCount = len(topology.Clusters)
+		for _, cl := range topology.Clusters {
+			nsCount += len(cl.Namespaces)
+			for _, ns := range cl.Namespaces {
+				podCount += len(ns.Pods)
+				for _, r := range ns.Resources {
+					counts[r.Kind]++
+				}
+			}
+		}
+	}
+
+	totalObjects := podCount
+	for _, v := range counts {
+		totalObjects += v
+	}
+
+	if preset == "" {
+		preset = "standard"
+	}
+
+	countsJSON, _ := json.Marshal(counts)
+
+	return fmt.Sprintf(`const state = reactive({
+  activePreset: %q,
+  clusters: %d,
+  namespaces: %d,
+  pods: %d,
+  totalObjects: %d,
+  counts: %s || {}
+});
+
+function runPreset(preset) {
+  state.activePreset = preset;
+  container.dispatchEvent(new CustomEvent('ephemeris-scale-test', {
+    detail: { preset },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+function setLayer(layer) {
+  container.dispatchEvent(new CustomEvent('ephemeris-layer-filter', {
+    detail: { mode: layer },
+    bubbles: true,
+    composed: true
+  }));
+}
+
+const template = html`+"`"+`
+  <div style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
+    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.88); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.38);">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">⚡ 3D Spatial Hierarchy & Fleet Scale Benchmark</span>
+      </div>
+      <span style="font-size: 11px; color: #34d399; font-weight: 700; font-family: 'JetBrains Mono', monospace;">LOD Culling: ACTIVE (60 FPS Target)</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;">
+      <div style="background: rgba(15, 23, 42, 0.82); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 8px; padding: 10px; text-align: center;">
+        <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">GKE Clusters</div>
+        <div style="font-size: 18px; font-weight: 800; color: #38bdf8; font-family: 'JetBrains Mono', monospace;">${() => state.clusters}</div>
+      </div>
+      <div style="background: rgba(15, 23, 42, 0.82); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 8px; padding: 10px; text-align: center;">
+        <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">Namespaces</div>
+        <div style="font-size: 18px; font-weight: 800; color: #c084fc; font-family: 'JetBrains Mono', monospace;">${() => state.namespaces}</div>
+      </div>
+      <div style="background: rgba(15, 23, 42, 0.82); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 8px; padding: 10px; text-align: center;">
+        <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">Compute Pods</div>
+        <div style="font-size: 18px; font-weight: 800; color: #34d399; font-family: 'JetBrains Mono', monospace;">${() => state.pods}</div>
+      </div>
+      <div style="background: rgba(15, 23, 42, 0.82); border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 8px; padding: 10px; text-align: center;">
+        <div style="font-size: 10px; color: #38bdf8; text-transform: uppercase; font-weight: 700;">Total 3D Objects</div>
+        <div style="font-size: 18px; font-weight: 800; color: #f8fafc; font-family: 'JetBrains Mono', monospace;">${() => state.totalObjects}</div>
+      </div>
+    </div>
+
+    <div style="background: rgba(15, 23, 42, 0.78); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;">
+      <div style="font-size: 11px; font-weight: 700; color: #cbd5e1; text-transform: uppercase; letter-spacing: 0.04em;">3D Stratified Ownership Stack Breakdown</div>
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 11px;">
+        <div style="background: rgba(30, 41, 59, 0.7); padding: 6px 8px; border-radius: 6px; border-left: 3px solid #f59e0b;">Gateway (y=8.5): <b>${() => state.counts.Gateway || 0}</b></div>
+        <div style="background: rgba(30, 41, 59, 0.7); padding: 6px 8px; border-radius: 6px; border-left: 3px solid #ec4899;">HTTPRoute (y=8.5): <b>${() => state.counts.HTTPRoute || 0}</b></div>
+        <div style="background: rgba(30, 41, 59, 0.7); padding: 6px 8px; border-radius: 6px; border-left: 3px solid #06b6d4;">Service (y=5.8): <b>${() => state.counts.Service || 0}</b></div>
+        <div style="background: rgba(30, 41, 59, 0.7); padding: 6px 8px; border-radius: 6px; border-left: 3px solid #a855f7;">Deployment (y=3.2): <b>${() => state.counts.Deployment || 0}</b></div>
+        <div style="background: rgba(30, 41, 59, 0.7); padding: 6px 8px; border-radius: 6px; border-left: 3px solid #6366f1;">ReplicaSet (y=1.8): <b>${() => state.counts.ReplicaSet || 0}</b></div>
+        <div style="background: rgba(30, 41, 59, 0.7); padding: 6px 8px; border-radius: 6px; border-left: 3px solid #14b8a6;">DaemonSet (y=3.2): <b>${() => state.counts.DaemonSet || 0}</b></div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px; background: rgba(15, 23, 42, 0.78); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 8px; padding: 10px 12px;">
+      <div style="font-size: 11px; font-weight: 700; color: #cbd5e1; text-transform: uppercase; letter-spacing: 0.04em;">Synthetic Scale Stress-Test Generator</div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button @click="${() => runPreset('standard')}" style="${() => 'padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid ' + (state.activePreset === 'standard' ? '#38bdf8; background: rgba(56, 189, 248, 0.25); color: #fff;' : 'rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.9); color: #cbd5e1;')}">
+          Standard Fleet (3 Clusters • 45 Obj)
+        </button>
+        <button @click="${() => runPreset('medium')}" style="${() => 'padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid ' + (state.activePreset === 'medium' ? '#a855f7; background: rgba(168, 85, 247, 0.28); color: #fff;' : 'rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.9); color: #cbd5e1;')}">
+          Medium Scale (6 Clusters • 240+ Obj)
+        </button>
+        <button @click="${() => runPreset('large')}" style="${() => 'padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid ' + (state.activePreset === 'large' ? '#f43f5e; background: rgba(244, 63, 94, 0.28); color: #fff;' : 'rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.9); color: #cbd5e1;')}">
+          ⚡ Large Stress Test (12 Clusters • 636 Obj)
+        </button>
+      </div>
+    </div>
+  </div>
+`+"`"+`;
+
+template(container);
+`, preset, clusterCount, nsCount, podCount, totalObjects, string(countsJSON))
 }

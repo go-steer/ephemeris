@@ -40,8 +40,8 @@ export function initializeApp() {
   );
 
   // Hook animation updates into the render loop
-  sceneManager.addUpdateListener((time) => {
-    topologyMesh.update(time);
+  sceneManager.addUpdateListener((time, camera) => {
+    topologyMesh.update(time, camera);
     controls.update(time);
   });
   sceneManager.start();
@@ -63,6 +63,10 @@ export function initializeApp() {
     topologyMesh.setSelectedPod(pod.name || pod.id);
     topologyMesh.highlightBlastRadius(pod.name || pod.id);
     panel.openObjectInspector(pod, meta);
+  };
+
+  controls.onHoverNode = (userData) => {
+    topologyMesh.setHoveredNode(userData);
   };
 
   // Wire Dedicated Object Chat Window prompt submission
@@ -121,6 +125,66 @@ export function initializeApp() {
   };
   document.addEventListener('ephemeris-scenario-select', onScenarioSelectEvent);
   window.addEventListener('ephemeris-scenario-select', onScenarioSelectEvent);
+
+  hud.onScaleTestSelect = (preset) => {
+    hud.setSelectedPod(null);
+    topologyMesh.clearSelectedPod();
+    topologyMesh.clearBlastRadius();
+    controls.resetView();
+    promptStartTime = performance.now();
+    hud.setStatusMessage(`Generating synthetic ${preset} scale topology...`, true);
+    panel.startGeneration(
+      '3D Scale Stress Test',
+      `Generating synthetic ${preset} multi-cluster topology...`
+    );
+    ws.sendScaleTest(preset);
+  };
+
+  hud.onLayerFilterChange = (mode) => {
+    topologyMesh.setLayerFilter(mode);
+    const labelMap = {
+      all: 'All Stratified Stack Tiers',
+      hierarchy: 'Workload Ownership (Deployment → ReplicaSet → Pod)',
+      networking: 'Traffic Ingress (Gateway → HTTPRoute → Service)',
+      pods: 'Compute Pods Only',
+    };
+    hud.setStatusMessage(`3D Layer Filter: ${labelMap[mode] || mode}`, false);
+  };
+
+  hud.onLabelModeChange = (mode) => {
+    topologyMesh.setLabelMode(mode);
+    const modeDesc = {
+      'hover-trouble':
+        'Hover & Trouble (healthy labels hidden until flyover hover or close zoom < 18u; trouble always visible)',
+      smart: 'Smart Contextual Labels (incidents, active chain, & close primary workloads)',
+      all: 'All Labels Visible (within camera distance LOD)',
+      off: 'Labels Disabled (only active pointer flyover hover shown)',
+    };
+    hud.setStatusMessage(`3D Label Mode: ${modeDesc[mode] || mode}`, false);
+  };
+
+  const onScaleTestEvent = (e) => {
+    const preset = e.detail?.preset;
+    if (preset) {
+      hud.setScalePreset(preset);
+      hud.onScaleTestSelect(preset);
+    }
+  };
+  document.addEventListener('ephemeris-scale-test', onScaleTestEvent);
+  window.addEventListener('ephemeris-scale-test', onScaleTestEvent);
+
+  const onLayerFilterEvent = (e) => {
+    const mode = e.detail?.mode;
+    if (mode) {
+      hud.onLayerFilterChange(mode);
+    }
+  };
+  document.addEventListener('ephemeris-layer-filter', onLayerFilterEvent);
+  window.addEventListener('ephemeris-layer-filter', onLayerFilterEvent);
+
+  setInterval(() => {
+    hud.updatePerformanceStats(topologyMesh.getPerformanceStats());
+  }, 450);
 
   hud.onResetIncident = () => {
     panel.hide();
@@ -735,6 +799,7 @@ export function initializeApp() {
     const isFirstLoad = !currentTopologyData;
     currentTopologyData = topologyData;
     topologyMesh.build(topologyData);
+    hud.updatePerformanceStats(topologyMesh.getPerformanceStats());
 
     if (topologyData && topologyData.scenario_id) {
       hud.setScenario(topologyData.scenario_id);
@@ -765,7 +830,7 @@ export function initializeApp() {
         }
       } else {
         hud.setStatusMessage(
-          `Scenario "${topologyData.scenario_id || 'default'}" active. 3D spatial mesh synchronized.`,
+          `Scenario "${topologyData.scenario_id || 'default'}" active. 3D spatial mesh synchronized (${clusters.length} clusters).`,
           false
         );
       }
@@ -778,52 +843,45 @@ export function initializeApp() {
       return;
     }
     hud.setStatusMessage(statusMsg, true);
-    panel.appendGenerationStep(statusMsg);
+    if (typeof panel.appendGenerationStep === 'function') {
+      panel.appendGenerationStep(statusMsg);
+    }
+  };
+
+  ws.onTelemetry = (telemetryData) => {
+    if (telemetryData && telemetryData.resource_uri) {
+      hud.setStatusMessage(`Received live telemetry for ${telemetryData.resource_uri}`, false);
+    }
   };
 
   ws.onUIComponent = (msg) => {
-    const durationMs = promptStartTime ? performance.now() - promptStartTime : 0;
+    if (!msg || !msg.code) return;
+    const durationMs = promptStartTime ? Math.round(performance.now() - promptStartTime) : 450;
+    promptStartTime = null;
+
+    let displayTitle = msg.resource_uri ? msg.resource_uri.split('/').pop() : 'Incident Triage';
+    let displayStatus = 'CrashLoopBackOff';
     const codeStr = msg.code || '';
     const archetype = msg.archetype || '';
-    const targetCluster = msg.target_cluster || '';
 
-    let displayTitle = hud.selectedPod ? hud.selectedPod.name : msg.selected_node_id || 'Pod';
-    let displayStatus = hud.selectedPod ? hud.selectedPod.status : 'Running';
-
-    if (targetCluster) {
-      const select = document.getElementById('hud-cluster-select');
-      if (select && select.value !== targetCluster) {
-        select.value = targetCluster;
-        hud.onClusterSelect(targetCluster, false);
-      }
-    }
-
-    if (archetype === 'dynamic_custom' || codeStr.includes('Kubernetes Controllers & CRDs')) {
-      displayTitle = targetCluster
-        ? `K8s & CRD Explorer: ${targetCluster}`
-        : 'Kubernetes & CRD Explorer';
+    if (
+      archetype === 'scale_benchmark' ||
+      codeStr.includes('3D Spatial Hierarchy & Fleet Scale Benchmark')
+    ) {
+      displayTitle = '3D Scale Stress Test';
       displayStatus = 'Running';
       panel.activeObject = null;
       hud.setSelectedPod(null);
       topologyMesh.clearSelectedPod();
-      if (!targetCluster) {
-        controls.resetView();
-      }
+      topologyMesh.clearFilterHighlight();
     } else if (
-      archetype === 'chaos_scenario' ||
       archetype === 'issues_matrix' ||
       codeStr.includes('Multi-Cluster Incident Fleet Matrix') ||
       codeStr.includes('Cluster Incident Matrix')
     ) {
-      displayTitle =
-        archetype === 'chaos_scenario'
-          ? 'Chaos Scenario & Fleet Health'
-          : targetCluster
-            ? `Cluster Issues: ${targetCluster}`
-            : 'Multi-Cluster Fleet Issues';
-      const hasIssues =
-        !codeStr.includes('ALL CLUSTERS HEALTHY') && !codeStr.includes('0 ACTIVE INCIDENTS');
-      displayStatus = hasIssues ? 'CrashLoopBackOff' : 'Running';
+      const targetCluster = msg.target_cluster || '';
+      displayTitle = targetCluster ? `Cluster Issues: ${targetCluster}` : 'Fleet Incident Matrix';
+      displayStatus = 'CrashLoopBackOff';
       panel.activeObject = null;
       hud.setSelectedPod(null);
       topologyMesh.clearSelectedPod();
@@ -833,8 +891,19 @@ export function initializeApp() {
         );
       } else {
         topologyMesh.highlightPodsByFilter((p) => p.status !== 'Running');
-        controls.resetView();
       }
+    } else if (
+      archetype === 'dynamic_custom' ||
+      codeStr.includes('Kubernetes Controllers & CRD Explorer') ||
+      codeStr.includes('K8s & CRD Objects')
+    ) {
+      const targetCluster = msg.target_cluster || '';
+      displayTitle = targetCluster ? `K8s & CRD Explorer: ${targetCluster}` : 'K8s & CRD Explorer';
+      displayStatus = 'Running';
+      panel.activeObject = null;
+      hud.setSelectedPod(null);
+      topologyMesh.clearSelectedPod();
+      topologyMesh.clearFilterHighlight();
     } else if (
       archetype === 'namespace_inventory' ||
       codeStr.includes('Namespace Workload Inventory')

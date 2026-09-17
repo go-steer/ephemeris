@@ -34,4 +34,7 @@ type Provider interface {
 
 	// ApplyScenario switches the cluster topology to a predefined chaos scenario ("default", "redis-oom", "traffic-spike", "healthy").
 	ApplyScenario(ctx context.Context, scenarioID string) (*api.TopologyData, error)
+
+	// ApplyScaleTest generates a synthetic large-scale topology stress test across clusters and hierarchical resources.
+	ApplyScaleTest(ctx context.Context, cfg api.ScaleTestConfig) (*api.TopologyData, error)
 }

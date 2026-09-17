@@ -77,6 +77,7 @@ export class CameraControls {
 
     // Callbacks
     this.onSelectNode = null;
+    this.onHoverNode = null;
 
     // Bound event handlers
     this._onPointerMove = this._onPointerMove.bind(this);
@@ -178,24 +179,30 @@ export class CameraControls {
     if (intersects.length > 0) {
       const hit = intersects[0].object;
       if (this.hoveredObject !== hit) {
-        this._unhover();
+        this._unhover(false);
         this.hoveredObject = hit;
         this.domElement.style.cursor = 'pointer';
         // Subtle scale highlight
         hit.scale.set(1.2, 1.2, 1.2);
+        if (this.onHoverNode) {
+          this.onHoverNode(hit.userData || null);
+        }
       }
     } else {
-      this._unhover();
+      this._unhover(true);
     }
   }
 
-  _unhover() {
+  _unhover(notify = true) {
     if (this.hoveredObject) {
       if (this.hoveredObject !== this.selectedMesh) {
         this.hoveredObject.scale.set(1.0, 1.0, 1.0);
       }
       this.hoveredObject = null;
       this.domElement.style.cursor = 'default';
+      if (notify && this.onHoverNode) {
+        this.onHoverNode(null);
+      }
     }
   }
 

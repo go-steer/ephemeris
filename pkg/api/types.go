@@ -30,7 +30,18 @@ const (
 	MsgTypeRemediate ClientMessageType = "remediate"
 	// MsgTypeScenario switches the active cluster chaos incident scenario.
 	MsgTypeScenario ClientMessageType = "scenario"
+	// MsgTypeScaleTest triggers a fleet scale stress test topology generation.
+	MsgTypeScaleTest ClientMessageType = "scale_test"
 )
+
+// ScaleTestConfig defines parameters for synthetic large-scale topology stress testing.
+type ScaleTestConfig struct {
+	Preset                string `json:"preset,omitempty"` // "standard", "medium", "large", or "custom"
+	Clusters              int    `json:"clusters,omitempty"`
+	NamespacesPerCluster  int    `json:"namespaces_per_cluster,omitempty"`
+	DeploymentsPerNS      int    `json:"deployments_per_ns,omitempty"`
+	ReplicasPerDeployment int    `json:"replicas_per_deployment,omitempty"`
+}
 
 // ClientMessage is sent from the browser client over WebSocket.
 type ClientMessage struct {
@@ -39,6 +50,8 @@ type ClientMessage struct {
 	ResourceURI       string            `json:"resource_uri,omitempty"`
 	Prompt            string            `json:"prompt,omitempty"`
 	ScenarioID        string            `json:"scenario_id,omitempty"`
+	ScalePreset       string            `json:"scale_preset,omitempty"`
+	ScaleConfig       *ScaleTestConfig  `json:"scale_config,omitempty"`
 	RemediationAction string            `json:"remediation_action,omitempty"`
 }
 
@@ -86,14 +99,16 @@ type PodNode struct {
 	Restarts     int               `json:"restarts"`
 	CPUUsage     string            `json:"cpu_usage"`
 	MemoryUsage  string            `json:"memory_usage"`
+	OwnerID      string            `json:"owner_id,omitempty"`   // ID of parent ReplicaSet, StatefulSet, or DaemonSet
+	OwnerKind    string            `json:"owner_kind,omitempty"` // ReplicaSet, StatefulSet, DaemonSet
 	Dependencies []string          `json:"dependencies"`
 	Labels       map[string]string `json:"labels"`
 }
 
-// K8sResource represents a Kubernetes core controller object (Deployment, Service, Gateway, HTTPRoute, StatefulSet) or Custom Resource Definition (CRD).
+// K8sResource represents a Kubernetes core controller object (Deployment, ReplicaSet, DaemonSet, Service, Gateway, HTTPRoute, StatefulSet) or Custom Resource Definition (CRD).
 type K8sResource struct {
 	ID          string   `json:"id"`
-	Kind        string   `json:"kind"`        // Deployment, Service, Gateway, HTTPRoute, StatefulSet, SparkApplication, RayCluster
+	Kind        string   `json:"kind"`        // Deployment, ReplicaSet, DaemonSet, Service, Gateway, HTTPRoute, StatefulSet, SparkApplication, RayCluster
 	APIVersion  string   `json:"api_version"` // e.g. apps/v1, gateway.networking.k8s.io/v1, sparkoperator.k8s.io/v1beta2
 	Name        string   `json:"name"`
 	Namespace   string   `json:"namespace"`
@@ -102,6 +117,9 @@ type K8sResource struct {
 	Replicas    string   `json:"replicas,omitempty"` // e.g. "3/3", "0/1"
 	IsCRD       bool     `json:"is_crd,omitempty"`   // true if CustomResourceDefinition
 	Summary     string   `json:"summary"`
+	OwnerID     string   `json:"owner_id,omitempty"`     // e.g. ReplicaSet points to Deployment ID
+	OwnerKind   string   `json:"owner_kind,omitempty"`   // e.g. "Deployment"
+	ChildrenIDs []string `json:"children_ids,omitempty"` // e.g. Deployment -> ReplicaSet IDs; ReplicaSet -> Pod IDs
 	ConnectedTo []string `json:"connected_to,omitempty"`
 }
 
