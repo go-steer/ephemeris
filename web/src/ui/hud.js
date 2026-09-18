@@ -319,7 +319,8 @@ export class HUDOverlay {
     if (!pill || !stats) return;
     const fps = stats.fps ?? 60;
     const total = stats.totalObjects ?? 0;
-    pill.textContent = `${fps} FPS • ${total} Obj`;
+    const zoom = stats.zoomBand ? ` • Zoom: ${stats.zoomBand}` : '';
+    pill.textContent = `${fps} FPS • ${total} Obj${zoom}`;
   }
 
   setClusters(clusters = [], activeClusterName = '') {

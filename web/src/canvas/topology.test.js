@@ -158,9 +158,9 @@ describe('TopologyMesh', () => {
     const runningPod = pods.find((m) => m.userData.pod.name === 'frontend');
     const crashPod = pods.find((m) => m.userData.pod.name === 'payment-service');
 
-    // Verify inner container hexagon (radialSegments: 6, compact scaled height)
+    // Verify inner container hexagon (radialSegments: 6, 50% reduced compact height)
     expect(runningPod.geometry.parameters.radialSegments).toBe(6);
-    expect(runningPod.geometry.parameters.height).toBeCloseTo(0.68 * 0.72, 2);
+    expect(runningPod.geometry.parameters.height).toBeCloseTo(0.34 * 0.72, 2);
 
     // Verify outer pod boundary heptagon (radialSegments: 7)
     expect(runningPod.userData.podBoundary).toBeDefined();
@@ -376,5 +376,85 @@ describe('TopologyMesh', () => {
     expect(crashPod.userData.nameSprite.visible).toBe(false);
     topology.setHoveredNode(crashPod.userData);
     expect(crashPod.userData.nameSprite.visible).toBe(true);
+  });
+
+  it('attaches official K8s SVG icon emblems to Pods and Controllers and tracks 4 semantic zoom bands', () => {
+    activeTopology.clusters[0].namespaces[0].resources = [
+      {
+        id: 'deploy-frontend',
+        kind: 'Deployment',
+        name: 'frontend-deploy',
+        status: 'Healthy',
+        children_ids: ['rs-frontend'],
+      },
+      {
+        id: 'rs-frontend',
+        kind: 'ReplicaSet',
+        name: 'frontend-rs',
+        status: 'Healthy',
+        children_ids: ['frontend'],
+      },
+      {
+        id: 'svc-frontend',
+        kind: 'Service',
+        name: 'frontend-svc',
+        status: 'Healthy',
+        connected_to: ['frontend'],
+      },
+      {
+        id: 'gw-frontend',
+        kind: 'Gateway',
+        name: 'frontend-gw',
+        status: 'Healthy',
+        connected_to: ['svc-frontend'],
+      },
+    ];
+    topology.build(activeTopology);
+
+    const runningPod = topology
+      .getInteractiveObjects()
+      .find((m) => m.userData.pod.name === 'frontend');
+    const deployMesh = topology.resourceMap.get('deploy-frontend');
+    const rsMesh = topology.resourceMap.get('rs-frontend');
+    const svcMesh = topology.resourceMap.get('svc-frontend');
+    const gwMesh = topology.resourceMap.get('gw-frontend');
+    const clusterMonolith = topology.clusterMonoliths[0];
+
+    // Cluster monolith has official control-plane.svg Top-Cap + Front-Face medallions
+    expect(clusterMonolith.userData.topMedallion).toBeDefined();
+    expect(clusterMonolith.userData.topMedallion.userData.isTopMedallion).toBe(true);
+    expect(clusterMonolith.userData.frontMedallion).toBeDefined();
+    expect(clusterMonolith.userData.frontMedallion.userData.isFrontMedallion).toBe(true);
+
+    // Every Pod and Controller has both Top-Cap and Front-Face K8s SVG medallions attached
+    expect(runningPod.userData.topMedallion).toBeDefined();
+    expect(runningPod.userData.frontMedallion).toBeDefined();
+    expect(runningPod.userData.iconEmblem.userData.isFrontMedallion).toBe(true);
+    expect(deployMesh.userData.topMedallion).toBeDefined();
+    expect(deployMesh.userData.frontMedallion).toBeDefined();
+    expect(rsMesh.userData.topMedallion).toBeDefined();
+    expect(rsMesh.userData.frontMedallion).toBeDefined();
+    expect(svcMesh.userData.topMedallion).toBeDefined();
+    expect(gwMesh.userData.topMedallion).toBeDefined();
+    expect(topology.iconSprites.length).toBeGreaterThanOrEqual(12);
+
+    // Verify 4 semantic zoom bands (Macro > 75, Cluster 35-75, Namespace 18-35, Micro <= 18)
+    const cam = new THREE.PerspectiveCamera();
+
+    cam.position.set(0, 60, 65); // dist ~88.4 -> Macro
+    topology.update(1000, cam);
+    expect(topology.getPerformanceStats().zoomBand).toBe('Macro');
+
+    cam.position.set(0, 30, 40); // dist = 50 -> Cluster
+    topology.update(1000, cam);
+    expect(topology.getPerformanceStats().zoomBand).toBe('Cluster');
+
+    cam.position.set(0, 15, 20); // dist = 25 -> Namespace
+    topology.update(1000, cam);
+    expect(topology.getPerformanceStats().zoomBand).toBe('Namespace');
+
+    cam.position.set(0, 8, 10); // dist ~12.8 -> Micro
+    topology.update(1000, cam);
+    expect(topology.getPerformanceStats().zoomBand).toBe('Micro');
   });
 });

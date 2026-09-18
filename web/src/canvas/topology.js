@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import * as THREE from 'three';
+import { createK8sSurfaceMedallions } from './k8s-icons.js';
 
 // Google Cloud & Kubernetes standard status color tokens
 const STATUS_COLORS = {
@@ -159,6 +160,7 @@ export class TopologyMesh {
     this.curveParticles = [];
     this.ownershipBeams = [];
     this.allLabelSprites = [];
+    this.iconSprites = [];
     this.podMap = new Map(); // pod.id / name -> mesh
     this.resourceMap = new Map(); // resource.id / name -> mesh
     this.clusterPositions = new Map(); // cluster.name -> Vector3
@@ -188,6 +190,7 @@ export class TopologyMesh {
       resourceCount: 0,
       activeLayer: 'all',
       labelMode: 'hover-trouble',
+      zoomBand: 'Cluster',
     };
     this._lastFrameTime = performance.now();
     this._frameSamples = [];
@@ -275,15 +278,15 @@ export class TopologyMesh {
     const clusterGroup = new THREE.Group();
     clusterGroup.position.copy(center);
 
-    // 1. Base Hexagonal Pedestal (Tiered architectural slab in Google Cloud dark slate)
-    const platformGeo = new THREE.CylinderGeometry(15, 16, 0.8, 6);
+    // 1. Base Hexagonal Pedestal (50% reduced height: 0.4)
+    const platformGeo = new THREE.CylinderGeometry(15, 16, 0.4, 6);
     const platformMat = new THREE.MeshStandardMaterial({
       color: 0x131724,
       roughness: 0.55,
       metalness: 0.4,
     });
     const platformMesh = new THREE.Mesh(platformGeo, platformMat);
-    platformMesh.position.y = 0.4;
+    platformMesh.position.y = 0.2;
     platformMesh.receiveShadow = true;
     clusterGroup.add(platformMesh);
 
@@ -291,7 +294,7 @@ export class TopologyMesh {
     const rimPoints = [];
     for (let i = 0; i <= 6; i++) {
       const theta = (i / 6) * Math.PI * 2;
-      rimPoints.push(new THREE.Vector3(Math.cos(theta) * 15.05, 0.82, Math.sin(theta) * 15.05));
+      rimPoints.push(new THREE.Vector3(Math.cos(theta) * 15.05, 0.42, Math.sin(theta) * 15.05));
     }
     const rimGeo = new THREE.BufferGeometry().setFromPoints(rimPoints);
     const rimMat = new THREE.LineBasicMaterial({
@@ -302,24 +305,25 @@ export class TopologyMesh {
     const rimLine = new THREE.Line(rimGeo, rimMat);
     clusterGroup.add(rimLine);
 
-    // 2. Central Kubernetes Control Plane Master Node (Hexagonal command monolith)
-    const monolithGeo = new THREE.CylinderGeometry(1.1, 1.3, 3.2, 6);
+    // 2. Central Kubernetes Control Plane Master Node (50% reduced height: 1.6, flat face at +Z)
+    const monolithGeo = new THREE.CylinderGeometry(1.1, 1.3, 1.6, 6);
+    monolithGeo.rotateY(Math.PI / 6);
     const monolithMat = new THREE.MeshStandardMaterial({
       color: 0x326ce5,
       roughness: 0.35,
       metalness: 0.45,
     });
     const monolithMesh = new THREE.Mesh(monolithGeo, monolithMat);
-    monolithMesh.position.y = 2.0;
+    monolithMesh.position.y = 1.0;
     clusterGroup.add(monolithMesh);
 
-    // Vertical status LED slit
+    // Side status LED slits along X flanks so +Z front face is clear for control-plane.svg
     const hasCrash = (cluster.namespaces || []).some((ns) =>
       (ns.pods || []).some((p) => p.status === 'CrashLoopBackOff' || p.status === 'Failed')
     );
     const slitColor = hasCrash ? 0xea4335 : 0x34a853;
 
-    const slitGeo = new THREE.BoxGeometry(0.12, 2.8, 1.44);
+    const slitGeo = new THREE.BoxGeometry(2.35, 1.4, 0.14);
     const slitMat = new THREE.MeshStandardMaterial({
       color: slitColor,
       emissive: slitColor,
@@ -327,18 +331,43 @@ export class TopologyMesh {
       roughness: 0.2,
     });
     const slitMesh = new THREE.Mesh(slitGeo, slitMat);
-    slitMesh.position.y = 2.0;
+    slitMesh.position.y = 1.0;
     clusterGroup.add(slitMesh);
+
+    // Official Kubernetes control-plane.svg Top-Cap + Front-Face Medallions on Cluster Monolith
+    const cpShieldColor = hasCrash ? '#ea4335' : '#326ce5';
+    const { topMedallion: cpTop, frontMedallion: cpFront } = createK8sSurfaceMedallions(
+      'Cluster',
+      cpShieldColor,
+      hasCrash,
+      {
+        topRadius: 0.85,
+        topY: 0.815,
+        frontRadius: 0.48,
+        frontY: 0.05,
+        frontZ: 1.12,
+      }
+    );
+    monolithMesh.add(cpTop);
+    monolithMesh.add(cpFront);
+    monolithMesh.userData = {
+      kind: 'Cluster',
+      clusterName: cluster.name,
+      topMedallion: cpTop,
+      frontMedallion: cpFront,
+      iconEmblem: cpFront,
+    };
+    this.iconSprites.push(cpTop, cpFront);
 
     this.clusterMonoliths.push(monolithMesh);
     this.clusterSlits.set(cluster.name, slitMesh);
 
-    // 3. Cluster Plaque Billboard
+    // 3. Cluster Plaque Billboard (50% lower elevation: y = 2.35)
     const statusLabel = hasCrash ? '1 CRASHING' : 'HEALTHY';
     const statusTextColor = hasCrash ? '#ea4335' : '#34a853';
     const plaqueSprite = createTextSprite(cluster.name, statusTextColor, 18, statusLabel);
     plaqueSprite.userData = { isPlaque: true, isIncident: hasCrash, kind: 'Cluster' };
-    plaqueSprite.position.set(0, 4.4, 0);
+    plaqueSprite.position.set(0, 2.35, 0);
     clusterGroup.add(plaqueSprite);
     this.allLabelSprites.push(plaqueSprite);
     this.clusterPlaques.set(cluster.name, { sprite: plaqueSprite, group: clusterGroup });
@@ -372,15 +401,15 @@ export class TopologyMesh {
         clusterCenter.z + nz
       );
 
-      // Namespace territory platform zone
-      const nsPadGeo = new THREE.CylinderGeometry(5.2, 5.6, 0.2, 6);
+      // Namespace territory platform zone (50% reduced height: 0.12, y = 0.45)
+      const nsPadGeo = new THREE.CylinderGeometry(5.2, 5.6, 0.12, 6);
       const nsPadMat = new THREE.MeshStandardMaterial({
         color: 0x111520,
         roughness: 0.65,
         metalness: 0.35,
       });
       const nsPadMesh = new THREE.Mesh(nsPadGeo, nsPadMat);
-      nsPadMesh.position.set(zoneCenter.x, 0.9, zoneCenter.z);
+      nsPadMesh.position.set(zoneCenter.x, 0.45, zoneCenter.z);
       this.group.add(nsPadMesh);
 
       // Namespace border line (Google Blue accent #4285F4 or Red if contains crashing workloads)
@@ -393,7 +422,7 @@ export class TopologyMesh {
         nsRimPoints.push(
           new THREE.Vector3(
             zoneCenter.x + Math.cos(theta) * 5.3,
-            1.02,
+            0.52,
             zoneCenter.z + Math.sin(theta) * 5.3
           )
         );
@@ -407,12 +436,12 @@ export class TopologyMesh {
       const nsRimLine = new THREE.Line(nsRimGeo, nsRimMat);
       this.group.add(nsRimLine);
 
-      // Namespace header sprite tag (alert red if namespace has crashing workloads)
+      // Namespace header sprite tag (50% lower elevation: y = 0.88)
       const nsColor = nsHasCrash ? '#ea4335' : '#8ab4f8';
       const nsBadge = nsHasCrash ? '1 CRASHING' : '';
       const nsSprite = createTextSprite(`ns: ${ns.name}`, nsColor, 14, nsBadge);
       nsSprite.userData = { isPlaque: true, isIncident: nsHasCrash, kind: 'Namespace' };
-      nsSprite.position.set(zoneCenter.x, 1.5, zoneCenter.z - 4.4);
+      nsSprite.position.set(zoneCenter.x, 0.88, zoneCenter.z - 4.4);
       this.group.add(nsSprite);
       this.allLabelSprites.push(nsSprite);
 
@@ -451,12 +480,13 @@ export class TopologyMesh {
       const colorScheme = STATUS_COLORS[status] || STATUS_COLORS.Unknown;
       const isCrash = status === 'CrashLoopBackOff' || status === 'Failed';
 
-      // Pod Group positioned on namespace territory
+      // Pod Group positioned on namespace territory (y = 0.52)
       const podGroup = new THREE.Group();
-      podGroup.position.set(px, 1.0, pz);
+      podGroup.position.set(px, 0.52, pz);
 
-      // 1. Inner Container (Scaled-down Solid Hexagon - radialSegments: 6)
-      const containerGeo = new THREE.CylinderGeometry(0.35 * s, 0.35 * s, 0.68 * s, 6);
+      // 1. Inner Container (50% reduced height: 0.34 * s, Solid Hexagon rotated 30° so +Z is a flat face)
+      const containerGeo = new THREE.CylinderGeometry(0.35 * s, 0.35 * s, 0.34 * s, 6);
+      containerGeo.rotateY(Math.PI / 6);
       const containerMat = new THREE.MeshStandardMaterial({
         color: colorScheme.color,
         roughness: 0.35,
@@ -465,7 +495,7 @@ export class TopologyMesh {
         emissiveIntensity: isCrash ? 0.85 : 0.25,
       });
       const containerMesh = new THREE.Mesh(containerGeo, containerMat);
-      containerMesh.position.y = 0.35 * s;
+      containerMesh.position.y = 0.17 * s;
       containerMesh.castShadow = true;
       podGroup.add(containerMesh);
 
@@ -479,8 +509,8 @@ export class TopologyMesh {
       const containerEdges = new THREE.LineSegments(containerEdgesGeo, containerEdgeMat);
       containerMesh.add(containerEdges);
 
-      // 2. Outer Pod Boundary (Scaled-down Dashed Heptagon - radialSegments: 7)
-      const podGeometry = new THREE.CylinderGeometry(0.58 * s, 0.58 * s, 0.88 * s, 7);
+      // 2. Outer Pod Boundary (50% reduced height: 0.44 * s, Dashed Heptagon - radialSegments: 7)
+      const podGeometry = new THREE.CylinderGeometry(0.58 * s, 0.58 * s, 0.44 * s, 7);
       const edges = new THREE.EdgesGeometry(podGeometry);
       const boundaryColor = isCrash ? 0xea4335 : status === 'Pending' ? 0xfbbc04 : 0x326ce5;
       const lineMaterial = new THREE.LineDashedMaterial({
@@ -496,10 +526,10 @@ export class TopologyMesh {
       podBoundary.computeLineDistances(); // Required for LineDashedMaterial
       containerMesh.add(podBoundary);
 
-      // 3. Pulsing alert beacon for CrashLoopBackOff / Failed
+      // 3. Pulsing alert beacon for CrashLoopBackOff / Failed (50% reduced height: 0.52 * s)
       let alertBeacon = null;
       if (isCrash) {
-        const beaconGeo = new THREE.CylinderGeometry(0.74 * s, 0.74 * s, 1.04 * s, 7);
+        const beaconGeo = new THREE.CylinderGeometry(0.74 * s, 0.74 * s, 0.52 * s, 7);
         const beaconEdges = new THREE.EdgesGeometry(beaconGeo);
         const beaconMat = new THREE.LineBasicMaterial({
           color: 0xea4335,
@@ -509,6 +539,29 @@ export class TopologyMesh {
         alertBeacon = new THREE.LineSegments(beaconEdges, beaconMat);
         containerMesh.add(alertBeacon);
       }
+
+      // 3.5 Official K8s pod.svg Top-Cap Medallion (Aerial View) + Front-Face Medallion (Zoom-In View)
+      // Flat hexagonal face at +Z is at z = 0.35 * cos(30°) * s = 0.3031 * s; frontZ = 0.318 * s sits cleanly in front!
+      const statusShieldHex = isCrash ? '#ea4335' : status === 'Pending' ? '#fbbc04' : '#326ce5';
+      const { topMedallion, frontMedallion } = createK8sSurfaceMedallions(
+        'Pod',
+        statusShieldHex,
+        isCrash,
+        {
+          topRadius: 0.26 * s,
+          topY: 0.176 * s,
+          frontRadius: 0.145 * s,
+          frontY: 0,
+          frontZ: 0.318 * s,
+        }
+      );
+      topMedallion.userData.nodeId = pod.id || pod.name;
+      topMedallion.userData.name = pod.name;
+      frontMedallion.userData.nodeId = pod.id || pod.name;
+      frontMedallion.userData.name = pod.name;
+      containerMesh.add(topMedallion);
+      containerMesh.add(frontMedallion);
+      this.iconSprites.push(topMedallion, frontMedallion);
 
       // Metadata on interactive mesh (containerMesh is raycast target)
       containerMesh.userData = {
@@ -526,13 +579,16 @@ export class TopologyMesh {
         alertBeacon: alertBeacon,
         capMesh: containerMesh,
         edgeMesh: containerEdges,
+        topMedallion: topMedallion,
+        frontMedallion: frontMedallion,
+        iconEmblem: frontMedallion,
       };
 
       if (isCrash) {
         this.crashPods.push(containerMesh);
       }
 
-      // 4. Pod name billboard tag (sleek, compact label)
+      // 4. Pod name billboard tag (sleek, compact label positioned just above low-profile pod)
       const shortPodName = pod.name.length > 24 ? pod.name.slice(0, 22) + '…' : pod.name;
       const subtitle = isCrash ? (pod.restarts > 0 ? `${pod.restarts} restarts` : 'CRASHING') : '';
       const nameSprite = createTextSprite(shortPodName, colorScheme.text, 12, subtitle);
@@ -543,7 +599,7 @@ export class TopologyMesh {
         isIncident: isCrash || status === 'Pending',
         isPlaque: false,
       };
-      nameSprite.position.set(0, 0.58 + 0.45 * s, 0);
+      nameSprite.position.set(0, 0.32 + 0.24 * s, 0);
       podGroup.add(nameSprite);
       this.allLabelSprites.push(nameSprite);
 
@@ -564,25 +620,25 @@ export class TopologyMesh {
 
     const s = this.objectScaleFactor || 0.72;
 
-    // Sort resources bottom-up so lower tiers (ReplicaSet) are positioned before upper tiers (Deployment -> Service -> Route -> Gateway)
+    // 50% reduced stratified vertical tier elevations
     const tierElevation = {
-      ReplicaSet: 2.35,
-      Deployment: 3.75,
-      DaemonSet: 3.75,
-      StatefulSet: 3.75,
-      SparkApplication: 3.95,
-      RayCluster: 3.95,
-      Service: 5.25,
-      HTTPRoute: 6.65,
-      Gateway: 8.05,
+      ReplicaSet: 1.35,
+      Deployment: 2.05,
+      DaemonSet: 2.05,
+      StatefulSet: 2.05,
+      SparkApplication: 2.15,
+      RayCluster: 2.15,
+      Service: 2.8,
+      HTTPRoute: 3.5,
+      Gateway: 4.2,
     };
 
     const sorted = [...resources].sort(
-      (a, b) => (tierElevation[a.kind] || 4.0) - (tierElevation[b.kind] || 4.0)
+      (a, b) => (tierElevation[a.kind] || 2.1) - (tierElevation[b.kind] || 2.1)
     );
 
     sorted.forEach((res, idx) => {
-      const elevation = tierElevation[res.kind] || 4.0;
+      const elevation = tierElevation[res.kind] || 2.1;
       const targets = [...(res.children_ids || []), ...(res.connected_to || [])];
 
       // Compute centroid of owned children if present
@@ -617,49 +673,61 @@ export class TopologyMesh {
       let colorHex = 0x6366f1;
       let textColor = '#818cf8';
       let geo = null;
+      let radialSegments = 8;
 
       switch (res.kind) {
         case 'ReplicaSet':
           colorHex = isDegraded ? 0xf59e0b : 0x6366f1;
           textColor = isDegraded ? '#fbbf24' : '#818cf8';
-          geo = new THREE.OctahedronGeometry(0.36 * s, 0);
+          radialSegments = 6;
+          geo = new THREE.CylinderGeometry(0.36 * s, 0.36 * s, 0.22 * s, radialSegments);
           break;
         case 'Deployment':
           colorHex = isDegraded ? 0xea4335 : 0xa855f7;
           textColor = isDegraded ? '#f87171' : '#c084fc';
-          geo = new THREE.CylinderGeometry(0.42 * s, 0.42 * s, 0.42 * s, 8);
+          radialSegments = 8;
+          geo = new THREE.CylinderGeometry(0.42 * s, 0.42 * s, 0.24 * s, radialSegments);
           break;
         case 'DaemonSet':
           colorHex = 0x14b8a6;
           textColor = '#2dd4bf';
-          geo = new THREE.TorusGeometry(0.38 * s, 0.11 * s, 8, 16);
+          radialSegments = 8;
+          geo = new THREE.CylinderGeometry(0.38 * s, 0.38 * s, 0.22 * s, radialSegments);
           break;
         case 'StatefulSet':
           colorHex = 0x3b82f6;
           textColor = '#60a5fa';
-          geo = new THREE.CylinderGeometry(0.38 * s, 0.38 * s, 0.52 * s, 12);
+          radialSegments = 8;
+          geo = new THREE.CylinderGeometry(0.38 * s, 0.38 * s, 0.26 * s, radialSegments);
           break;
         case 'Service':
           colorHex = 0x06b6d4;
           textColor = '#22d3ee';
-          geo = new THREE.OctahedronGeometry(0.42 * s, 0);
+          radialSegments = 6;
+          geo = new THREE.CylinderGeometry(0.38 * s, 0.38 * s, 0.22 * s, radialSegments);
           break;
         case 'HTTPRoute':
           colorHex = 0xec4899;
           textColor = '#f472b6';
-          geo = new THREE.CylinderGeometry(0.42 * s, 0.42 * s, 0.22 * s, 6);
+          radialSegments = 6;
+          geo = new THREE.CylinderGeometry(0.42 * s, 0.42 * s, 0.18 * s, radialSegments);
           break;
         case 'Gateway':
           colorHex = 0xf59e0b;
           textColor = '#fbbf24';
-          geo = new THREE.TorusGeometry(0.48 * s, 0.13 * s, 10, 20);
+          radialSegments = 8;
+          geo = new THREE.CylinderGeometry(0.46 * s, 0.46 * s, 0.22 * s, radialSegments);
           break;
         default:
           colorHex = 0xf43f5e;
           textColor = '#fb7185';
-          geo = new THREE.IcosahedronGeometry(0.42 * s, 0);
+          radialSegments = 8;
+          geo = new THREE.CylinderGeometry(0.38 * s, 0.38 * s, 0.22 * s, radialSegments);
           break;
       }
+
+      // Rotate cylinder by half a segment so +Z is always a flat face (never a sharp vertical ridge)
+      geo.rotateY(Math.PI / radialSegments);
 
       const mat = new THREE.MeshStandardMaterial({
         color: colorHex,
@@ -669,9 +737,6 @@ export class TopologyMesh {
         emissiveIntensity: isDegraded ? 0.65 : 0.3,
       });
       const mesh = new THREE.Mesh(geo, mat);
-      if (res.kind === 'DaemonSet' || res.kind === 'Gateway') {
-        mesh.rotation.x = Math.PI / 2;
-      }
       resGroup.add(mesh);
 
       // Wireframe rim
@@ -682,6 +747,31 @@ export class TopologyMesh {
         opacity: 0.32,
       });
       mesh.add(new THREE.LineSegments(edgeGeo, edgeMat));
+
+      // Official K8s SVG Top-Cap Medallion (Aerial View) + Front-Face Medallion (Zoom-In View)
+      const shieldHex = isDegraded ? '#ea4335' : textColor;
+      const halfH = (geo.parameters?.height || 0.22 * s) / 2;
+      const rad = geo.parameters?.radiusTop || 0.38 * s;
+      const flatFrontZ = rad * Math.cos(Math.PI / radialSegments);
+      const { topMedallion, frontMedallion } = createK8sSurfaceMedallions(
+        res.kind,
+        shieldHex,
+        isDegraded,
+        {
+          topRadius: rad * 0.78,
+          topY: halfH + 0.01,
+          frontRadius: Math.min(halfH * 0.92, 0.14 * s),
+          frontY: 0,
+          frontZ: flatFrontZ + 0.015 * s,
+        }
+      );
+      topMedallion.userData.nodeId = res.id || res.name;
+      topMedallion.userData.name = res.name;
+      frontMedallion.userData.nodeId = res.id || res.name;
+      frontMedallion.userData.name = res.name;
+      resGroup.add(topMedallion);
+      resGroup.add(frontMedallion);
+      this.iconSprites.push(topMedallion, frontMedallion);
 
       const kindPrefixes = {
         ReplicaSet: 'RS',
@@ -710,7 +800,7 @@ export class TopologyMesh {
         isIncident: isDegraded,
         isPlaque: false,
       };
-      sprite.position.set(0, 0.52 * s + 0.22, 0);
+      sprite.position.set(0, halfH + 0.22, 0);
       resGroup.add(sprite);
       this.allLabelSprites.push(sprite);
 
@@ -733,6 +823,9 @@ export class TopologyMesh {
         podGroup: resGroup,
         containerMesh: mesh,
         nameSprite: sprite,
+        topMedallion: topMedallion,
+        frontMedallion: frontMedallion,
+        iconEmblem: frontMedallion,
       };
 
       this.group.add(resGroup);
@@ -778,7 +871,7 @@ export class TopologyMesh {
         const start = resMesh.userData.podGroup.position.clone();
         const end = childMesh.userData.podGroup.position.clone();
         if (childMesh.userData.type === 'pod') {
-          end.y += 0.55 * (this.objectScaleFactor || 0.72);
+          end.y += 0.34 * (this.objectScaleFactor || 0.72);
         }
 
         const geo = new THREE.BufferGeometry().setFromPoints([start, end]);
@@ -1017,8 +1110,9 @@ export class TopologyMesh {
         }
         targetMesh.userData.nameSprite.material.dispose();
       }
-      const newSprite = createTextSprite(targetMesh.userData.pod.name, '#34a853', 14, 'Running');
-      newSprite.position.set(0, 1.85, 0);
+      const s = this.objectScaleFactor || 0.72;
+      const newSprite = createTextSprite(targetMesh.userData.pod.name, '#34a853', 12, 'Running');
+      newSprite.position.set(0, 0.32 + 0.24 * s, 0);
       targetMesh.userData.podGroup.add(newSprite);
       targetMesh.userData.nameSprite = newSprite;
     }
@@ -1068,7 +1162,7 @@ export class TopologyMesh {
             nsPlaque.sprite.material.dispose();
           }
           const newNsSprite = createTextSprite(`ns: ${nsName}`, '#8ab4f8', 14, '');
-          newNsSprite.position.set(nsPlaque.zoneCenter.x, 1.5, nsPlaque.zoneCenter.z - 4.4);
+          newNsSprite.position.set(nsPlaque.zoneCenter.x, 0.88, nsPlaque.zoneCenter.z - 4.4);
           this.group.add(newNsSprite);
           nsPlaque.sprite = newNsSprite;
         }
@@ -1104,7 +1198,7 @@ export class TopologyMesh {
           plaqueEntry.sprite.material.dispose();
         }
         const newClusterSprite = createTextSprite(clusterName, '#34a853', 18, 'HEALTHY');
-        newClusterSprite.position.set(0, 4.4, 0);
+        newClusterSprite.position.set(0, 2.35, 0);
         plaqueEntry.group.add(newClusterSprite);
         plaqueEntry.sprite = newClusterSprite;
       }
@@ -1426,6 +1520,37 @@ export class TopologyMesh {
     const worldPos = new THREE.Vector3();
     const intermediateKinds = new Set(['ReplicaSet', 'DaemonSet', 'Service', 'HTTPRoute']);
 
+    if (camera) {
+      const originDist = camera.position.length();
+      if (originDist > 75) {
+        this.stats.zoomBand = 'Macro';
+      } else if (originDist > 35) {
+        this.stats.zoomBand = 'Cluster';
+      } else if (originDist > 18) {
+        this.stats.zoomBand = 'Namespace';
+      } else {
+        this.stats.zoomBand = 'Micro';
+      }
+    }
+
+    // Manage Official K8s SVG Icon Emblem visibility across semantic zoom bands
+    for (const icon of this.iconSprites) {
+      if (!icon || !icon.parent) continue;
+      if (!icon.parent.visible) {
+        icon.visible = false;
+        continue;
+      }
+      if (camera) {
+        icon.getWorldPosition(worldPos);
+        const iconDist = camera.position.distanceTo(worldPos);
+        const isPod = icon.userData?.kind === 'Pod';
+        const isInc = Boolean(icon.userData?.isIncident);
+        icon.visible = isInc || !isPod || iconDist < 65;
+      } else {
+        icon.visible = true;
+      }
+    }
+
     for (const sprite of this.allLabelSprites) {
       if (!sprite || !sprite.parent) continue;
       if (!sprite.parent.visible) {
@@ -1653,6 +1778,7 @@ export class TopologyMesh {
     this.curveParticles = [];
     this.ownershipBeams = [];
     this.allLabelSprites = [];
+    this.iconSprites = [];
     this.conduits = [];
     this.blastRadiusPods.clear();
     this.blastRadiusConduits.clear();
