@@ -92,6 +92,9 @@ func main() {
 			liveGKE = lp
 			liveTelem = telemetry.NewLiveProvider(*gcpProject, liveGKE, gkeMCPClient, logMCPClient)
 			log.Printf("Initialized Native Live GKE Provider (google.golang.org/api/container/v1 + k8s.io/client-go) for project %s", *gcpProject)
+			go func() {
+				_, _ = liveGKE.GetTopology(context.Background())
+			}()
 		} else {
 			log.Printf("Warning: Live GKE provider initialization skipped (%v)", err)
 		}

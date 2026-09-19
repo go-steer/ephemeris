@@ -74,7 +74,7 @@ func NewLiveProvider(ctx context.Context, projectID string, mcpClient *mcp.Clien
 		tokenSource: ts,
 		mcpClient:   mcpClient,
 		fallback:    NewMockProvider(),
-		cacheTTL:    15 * time.Second,
+		cacheTTL:    60 * time.Second,
 		clientsets:  make(map[string]*kubernetes.Clientset),
 		clusterLocs: make(map[string]string),
 	}, nil
@@ -177,7 +177,8 @@ func (p *LiveProvider) inspectCluster(ctx context.Context, cluster *container.Cl
 
 	if cluster.Endpoint != "" {
 		var caData []byte
-		if cluster.MasterAuth != nil && cluster.MasterAuth.ClusterCaCertificate != "" {
+		isDNSEndpoint := strings.HasSuffix(cluster.Endpoint, ".gke.goog")
+		if !isDNSEndpoint && cluster.MasterAuth != nil && cluster.MasterAuth.ClusterCaCertificate != "" {
 			caData, _ = base64.StdEncoding.DecodeString(cluster.MasterAuth.ClusterCaCertificate)
 		}
 
@@ -186,7 +187,7 @@ func (p *LiveProvider) inspectCluster(ctx context.Context, cluster *container.Cl
 			BearerToken: bearerToken,
 			TLSClientConfig: rest.TLSClientConfig{
 				CAData:   caData,
-				Insecure: len(caData) == 0,
+				Insecure: !isDNSEndpoint && len(caData) == 0,
 			},
 			Timeout: 3500 * time.Millisecond,
 		}
