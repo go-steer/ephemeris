@@ -97,9 +97,9 @@ func main() {
 			if err := runStatus(ctx, clusterName, cs); err != nil {
 				log.Fatalf("[%s] status failed: %v", clusterName, err)
 			}
-		case "clean":
+		case "clean", "rollback", "reset":
 			if err := runClean(ctx, clusterName, cs); err != nil {
-				log.Fatalf("[%s] clean failed: %v", clusterName, err)
+				log.Fatalf("[%s] %s failed: %v", clusterName, subcmd, err)
 			}
 		default:
 			printUsage()
@@ -116,6 +116,7 @@ Commands:
   inject oom-cascade     Deploy OOM-exiting StatefulSet (redis-cache) + ImagePullBackOff Deployment (checkout-worker) + Healthy Frontend
   inject pending-quota   Deploy unschedulable Deployment (llm-batch-trainer) requesting 128 CPUs to trigger Pending / FailedScheduling
   heal                   Patch all workloads in 'ephemeris-chaos' to healthy running containers (live GKE rolling update)
+  rollback               Roll back and delete the 'ephemeris-chaos' namespace and all injected chaos resources (alias: clean, reset)
   status                 Print live status of all 'ephemeris-chaos' resources on target cluster(s)
   clean                  Delete the 'ephemeris-chaos' namespace and all chaos resources`)
 }
