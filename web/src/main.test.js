@@ -580,6 +580,48 @@ describe('initializeApp', () => {
     );
   });
 
+  it('cancels prior in-flight agent turn when rewriting an unpinned panel or clicking Stop button, and ignores stale responses', () => {
+    const app = initializeApp();
+    const cancelledReqIds = [];
+    app.ws.sendCancel = (reqId) => {
+      cancelledReqIds.push(reqId);
+      return true;
+    };
+
+    // Start first prompt turn
+    app.hud.onPromptSubmit('show gateways in ap-iap-testing', null, null);
+    const firstReqId = app.panel.activeRequestId;
+    expect(firstReqId).toBeTruthy();
+    expect(app.panel.isGenerating).toBe(true);
+
+    // Submit a second prompt before the first turn finishes -> should preempt firstReqId!
+    app.hud.onPromptSubmit('show httproutes in ap-iap-testing', null, null);
+    const secondReqId = app.panel.activeRequestId;
+    expect(secondReqId).toBeTruthy();
+    expect(secondReqId).not.toBe(firstReqId);
+    expect(cancelledReqIds).toContain(firstReqId);
+
+    // Simulate late arrival of UI component from the cancelled firstReqId -> must be ignored!
+    app.ws.onUIComponent(
+      {
+        request_id: firstReqId,
+        code: 'const template = html`<div class="stale-turn-output">STALE GATEWAY UI</div>`; template(container);',
+      },
+      firstReqId
+    );
+    expect(app.panel.runtime.container.innerHTML).not.toContain('STALE GATEWAY UI');
+    expect(app.panel.isGenerating).toBe(true);
+
+    // Now click the ⏹ Stop button inside the streaming stepper
+    const stopBtn = app.panel.runtime.container.querySelector('#panel-cancel-gen-btn');
+    expect(stopBtn).not.toBeNull();
+    stopBtn.click();
+
+    expect(cancelledReqIds).toContain(secondReqId);
+    expect(app.panel.isGenerating).toBe(false);
+    expect(app.panel.statusBadge.textContent).toBe('CANCELLED');
+  });
+
   it('returns false when container is missing', () => {
     document.body.innerHTML = '';
     expect(initializeApp()).toBe(false);

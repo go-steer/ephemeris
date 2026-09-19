@@ -118,13 +118,27 @@ export class WebSocketClient {
           if (this.onTopology) this.onTopology(msg.topology);
           break;
         case 'status':
-          if (this.onStatus) this.onStatus(msg.message || msg.status);
+          if (this.onStatus) {
+            if (msg.request_id) {
+              this.onStatus(msg.message || msg.status, msg.request_id);
+            } else {
+              this.onStatus(msg.message || msg.status);
+            }
+          }
           break;
         case 'telemetry':
           if (this.onTelemetry) this.onTelemetry(msg.telemetry);
           break;
         case 'ui_component':
-          if (this.onUIComponent) this.onUIComponent(msg.ui || msg);
+          if (this.onUIComponent) {
+            const uiData = msg.ui || msg;
+            const reqId = msg.request_id || (uiData && uiData.request_id);
+            if (reqId) {
+              this.onUIComponent(uiData, reqId);
+            } else {
+              this.onUIComponent(uiData);
+            }
+          }
           break;
         case 'error':
           if (this.onError) this.onError(msg);
@@ -167,13 +181,28 @@ export class WebSocketClient {
     });
   }
 
-  sendPrompt(nodeId, resourceUri, promptText) {
-    return this._send({
+  sendPrompt(nodeId, resourceUri, promptText, requestId = '') {
+    const payload = {
       type: 'prompt',
       selected_node_id: nodeId,
       resource_uri: resourceUri,
       prompt: promptText,
-    });
+    };
+    if (requestId) {
+      payload.request_id = requestId;
+    }
+    return this._send(payload);
+  }
+
+  sendCancel(requestId = '') {
+    this.pendingQueue = this.pendingQueue.filter(
+      (item) => item.type !== 'prompt' || (requestId && item.request_id !== requestId)
+    );
+    const payload = { type: 'cancel' };
+    if (requestId) {
+      payload.request_id = requestId;
+    }
+    return this._send(payload);
   }
 
   sendRemediate(podId, action = 'rollback') {

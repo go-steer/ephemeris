@@ -612,6 +612,11 @@ export function initializeApp() {
   };
 
   // 5. Wire Prompt Submission -> Intelligent Target Resolution & WebSocket
+  panel.onCancelGeneration = (reqId) => {
+    ws.sendCancel(reqId);
+    hud.setStatusMessage('⏹ Agent synthesis cancelled by user.', false);
+  };
+
   hud.onPromptSubmit = (promptText, pod, meta) => {
     const pLower = (promptText || '').toLowerCase();
     const targetCluster = extractTargetCluster(pLower);
@@ -623,11 +628,11 @@ export function initializeApp() {
       controls.resetView();
       promptStartTime = performance.now();
       hud.setStatusMessage(`Executing chaos scenario mutation: "${promptText}"...`, true);
-      panel.startGeneration(
+      const reqId = panel.startGeneration(
         'Chaos Scenario Injector',
         'Mutating cluster state & running k8s-lookout check...'
       );
-      ws.sendPrompt('chaos-injector', 'gke://fleet/chaos', promptText);
+      ws.sendPrompt('chaos-injector', 'gke://fleet/chaos', promptText, reqId);
       return;
     }
 
@@ -647,11 +652,14 @@ export function initializeApp() {
         ? `K8s & CRD Explorer: ${targetCluster}`
         : 'K8s & CRD Explorer';
       hud.setStatusMessage(`Synthesizing ${targetLabel} UI...`, true);
-      panel.startGeneration(targetLabel, 'Routing intent & querying MCP lookout_resources...');
+      const reqId = panel.startGeneration(
+        targetLabel,
+        'Routing intent & querying MCP lookout_resources...'
+      );
       const uri = targetCluster
         ? `gke://cluster/${targetCluster}/resources`
         : 'gke://fleet/resources';
-      ws.sendPrompt(targetCluster || 'fleet-resources', uri, promptText);
+      ws.sendPrompt(targetCluster || 'fleet-resources', uri, promptText, reqId);
       return;
     }
 
@@ -680,14 +688,19 @@ export function initializeApp() {
           : `Scanning multi-cluster fleet for active issues...`,
         true
       );
-      panel.startGeneration(
+      const reqId = panel.startGeneration(
         headerLabel,
         targetCluster
           ? `Querying anomalies in ${targetCluster}...`
           : 'Querying multi-cluster anomalies...'
       );
       const uri = targetCluster ? `gke://cluster/${targetCluster}/issues` : 'gke://fleet/issues';
-      ws.sendPrompt(targetCluster ? `cluster-${targetCluster}` : 'fleet-issues', uri, promptText);
+      ws.sendPrompt(
+        targetCluster ? `cluster-${targetCluster}` : 'fleet-issues',
+        uri,
+        promptText,
+        reqId
+      );
       return;
     }
 
@@ -719,8 +732,11 @@ export function initializeApp() {
       );
       promptStartTime = performance.now();
       hud.setStatusMessage(`Listing workloads in namespace "${targetNs}"...`, true);
-      panel.startGeneration(`ns/${targetNs}`, `Listing workloads in namespace ${targetNs}...`);
-      ws.sendPrompt(`ns-${targetNs}`, `gke://namespace/${targetNs}`, promptText);
+      const reqId = panel.startGeneration(
+        `ns/${targetNs}`,
+        `Listing workloads in namespace ${targetNs}...`
+      );
+      ws.sendPrompt(`ns-${targetNs}`, `gke://namespace/${targetNs}`, promptText, reqId);
       return;
     }
 
@@ -738,8 +754,11 @@ export function initializeApp() {
       topologyMesh.clearFilterHighlight();
       promptStartTime = performance.now();
       hud.setStatusMessage(`Comparing cluster resource saturation...`, true);
-      panel.startGeneration('Resource Leaderboard', 'Ranking workload CPU & memory saturation...');
-      ws.sendPrompt('fleet-leaderboard', 'gke://fleet/leaderboard', promptText);
+      const reqId = panel.startGeneration(
+        'Resource Leaderboard',
+        'Ranking workload CPU & memory saturation...'
+      );
+      ws.sendPrompt('fleet-leaderboard', 'gke://fleet/leaderboard', promptText, reqId);
       return;
     }
 
@@ -789,11 +808,14 @@ export function initializeApp() {
     hud.setSelectedPod(targetPod, targetMeta);
     promptStartTime = performance.now();
     hud.setStatusMessage(`Investigating ${targetPod.name}: "${promptText}"...`, true);
-    panel.startGeneration(targetPod.name, `Investigating @${targetPod.name}: "${promptText}"...`);
+    const reqId = panel.startGeneration(
+      targetPod.name,
+      `Investigating @${targetPod.name}: "${promptText}"...`
+    );
 
     const resourceUri =
       targetPod.resource_uri || `gke://${targetMeta?.namespaceName || 'default'}/${targetPod.name}`;
-    ws.sendPrompt(targetPod.id, resourceUri, promptText);
+    ws.sendPrompt(targetPod.id, resourceUri, promptText, reqId);
   };
 
   // 6. Handle WebSocket events
@@ -861,14 +883,20 @@ export function initializeApp() {
     }
   };
 
-  ws.onStatus = (statusMsg) => {
-    if (typeof statusMsg === 'string' && statusMsg.startsWith('✓')) {
+  ws.onStatus = (statusMsg, requestId = '') => {
+    if (typeof statusMsg === 'string' && (statusMsg.startsWith('✓') || statusMsg.startsWith('⏹'))) {
       hud.setStatusMessage(statusMsg, false);
       return;
     }
+    if (requestId && typeof panel.findWindowByRequestId === 'function') {
+      const win = panel.findWindowByRequestId(requestId);
+      if (!win) {
+        return; // Ignore status update from a cancelled or superseded turn
+      }
+    }
     hud.setStatusMessage(statusMsg, true);
     if (typeof panel.appendGenerationStep === 'function') {
-      panel.appendGenerationStep(statusMsg);
+      panel.appendGenerationStep(statusMsg, requestId);
     }
   };
 
@@ -878,8 +906,16 @@ export function initializeApp() {
     }
   };
 
-  ws.onUIComponent = (msg) => {
+  ws.onUIComponent = (msg, requestId = '') => {
     if (!msg || !msg.code) return;
+    const reqId = requestId || msg.request_id || '';
+    if (reqId && typeof panel.findWindowByRequestId === 'function') {
+      const win = panel.findWindowByRequestId(reqId);
+      if (!win) {
+        return; // Drop stale UI component from a cancelled or superseded turn
+      }
+    }
+
     const durationMs = promptStartTime ? Math.round(performance.now() - promptStartTime) : 450;
     promptStartTime = null;
 
@@ -963,6 +999,7 @@ export function initializeApp() {
       podId: displayTitle,
       status: displayStatus,
       durationMs: durationMs,
+      requestId: reqId,
     });
   };
 

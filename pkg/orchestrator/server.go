@@ -66,9 +66,22 @@ type Server struct {
 }
 
 type clientState struct {
-	writeMu        sync.Mutex
-	activeResource string
-	selectedNodeID string
+	writeMu         sync.Mutex
+	promptMu        sync.Mutex
+	activeCancel    context.CancelFunc
+	activeRequestID string
+	activeResource  string
+	selectedNodeID  string
+}
+
+func (st *clientState) cancelActivePrompt() {
+	st.promptMu.Lock()
+	defer st.promptMu.Unlock()
+	if st.activeCancel != nil {
+		st.activeCancel()
+		st.activeCancel = nil
+		st.activeRequestID = ""
+	}
 }
 
 // NewServer initializes the orchestrator hub.
@@ -205,6 +218,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	defer func() {
+		state.cancelActivePrompt()
 		s.mu.Lock()
 		delete(s.clients, conn)
 		s.mu.Unlock()
@@ -409,130 +423,197 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 			},
 		})
 
-	case api.MsgTypePrompt:
-		resourceURI := msg.ResourceURI
-		if resourceURI == "" {
-			resourceURI = state.activeResource
-		}
-		if resourceURI == "" {
-			resourceURI = "gke://fleet/overview"
-		}
-
-		statusFn := func(statusMsg string) {
-			_ = s.writeJSON(conn, state, api.ServerMessage{
-				Type:    api.MsgTypeStatus,
-				Message: statusMsg,
-			})
-		}
-
-		topo, _ := s.gke.GetTopology(ctx)
-
-		// Step 1: Resolve natural-language intent via Gemini LLM (or deterministic fallback)
-		intent := s.agent.ResolveIntent(ctx, msg.Prompt, &api.TelemetryData{
-			ResourceURI: resourceURI,
-			Topology:    topo,
-		}, statusFn)
-
-		// If prompt requested a scale stress test, apply it immediately
-		if intent.Archetype == ArchetypeScaleBenchmark {
-			preset := intent.TargetScenario
-			if preset == "" {
-				preset = "large"
-			}
-			newTopo, err := s.gke.ApplyScaleTest(ctx, api.ScaleTestConfig{Preset: preset})
-			if err == nil {
-				topo = newTopo
-				s.broadcastTopology(topo)
-				statusFn(fmt.Sprintf("⚡ Scale Stress Test Injected: %s (%d clusters) — synthesizing benchmark UI...", preset, len(topo.Clusters)))
-			}
-			resourceURI = "gke://fleet/scale-test"
-		}
-
-		// If prompt requested a chaos scenario injection, apply it immediately and transition to issues_matrix
-		if intent.Archetype == ArchetypeChaosScenario {
-			scenarioID := intent.TargetScenario
-			if scenarioID == "" {
-				scenarioID = "redis-oom"
-			}
-			newTopo, err := s.gke.ApplyScenario(ctx, scenarioID)
-			if err == nil {
-				topo = newTopo
-				if mockTelem, ok := s.telemetry.(*telemetry.MockProvider); ok {
-					mockTelem.SetScenario(scenarioID)
-				}
-				s.broadcastTopology(topo)
-				statusFn(fmt.Sprintf("⚡ Chaos Scenario Injected: %s — synthesizing fleet incident matrix...", scenarioID))
-			}
-			intent.Archetype = ArchetypeIssuesFleetMatrix
-			resourceURI = "gke://fleet/issues"
-		}
-
-		// Adjust resourceURI based on LLM-resolved intent
-		switch intent.Archetype {
-		case ArchetypeScaleBenchmark:
-			resourceURI = "gke://fleet/scale-test"
-		case ArchetypeIssuesFleetMatrix:
-			if intent.TargetCluster != "" {
-				resourceURI = "gke://cluster/" + intent.TargetCluster + "/issues"
-			} else {
-				resourceURI = "gke://fleet/issues"
-			}
-		case ArchetypeDynamicCustom:
-			if intent.TargetCluster != "" {
-				resourceURI = "gke://cluster/" + intent.TargetCluster + "/resources"
-			} else {
-				resourceURI = "gke://fleet/resources"
-			}
-		case ArchetypeNamespaceInventory:
-			ns := intent.TargetNamespace
-			if ns == "" {
-				ns = "production"
-			}
-			resourceURI = "gke://namespace/" + ns
-		case ArchetypeResourceLeaderboard:
-			resourceURI = "gke://fleet/leaderboard"
-		default:
-			if intent.TargetPod != "" && !strings.Contains(resourceURI, intent.TargetPod) {
-				resourceURI = "gke://production/" + intent.TargetPod
-			}
-		}
-
-		// Step 2: Fetch telemetry and attach live topology
-		statusFn("Executing MCP telemetry & topology query...")
-		telem, err := s.telemetry.QueryLogs(ctx, resourceURI, 50)
-		if err != nil {
-			s.sendError(conn, state, fmt.Sprintf("telemetry query failed: %v", err))
-			return
-		}
-		if topo != nil {
-			telem.Topology = topo
-		}
-
-		// Step 3: Generate ArrowJS reactive UI with progressive streaming status updates
-		code, err := s.agent.GenerateStreamWithIntent(ctx, msg.Prompt, intent, telem, statusFn)
-		if err != nil {
-			s.sendError(conn, state, fmt.Sprintf("UI compilation failed: %v", err))
-			return
-		}
-
-		// Step 4: Deliver UI component with resolved Archetype metadata
+	case api.MsgTypeCancel:
+		state.cancelActivePrompt()
 		_ = s.writeJSON(conn, state, api.ServerMessage{
-			Type: api.MsgTypeUIComponent,
-			UI: &api.UIComponentData{
-				ResourceURI:     resourceURI,
-				Prompt:          msg.Prompt,
-				Archetype:       string(intent.Archetype),
-				TargetNamespace: intent.TargetNamespace,
-				TargetCluster:   intent.TargetCluster,
-				TargetPod:       intent.TargetPod,
-				Code:            code,
-				Telemetry:       telem,
-			},
+			Type:      api.MsgTypeStatus,
+			RequestID: msg.RequestID,
+			Message:   "⏹ Agent synthesis cancelled by user",
 		})
+
+	case api.MsgTypePrompt:
+		reqID := msg.RequestID
+		if reqID == "" {
+			reqID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+		}
+
+		// Preempt any prior in-flight prompt turn on this client connection before starting the new turn.
+		state.promptMu.Lock()
+		if state.activeCancel != nil {
+			state.activeCancel()
+		}
+		promptCtx, cancel := context.WithCancel(ctx)
+		state.activeCancel = cancel
+		state.activeRequestID = reqID
+		state.promptMu.Unlock()
+
+		msgCopy := *msg
+		go s.runPromptTurn(promptCtx, cancel, conn, state, msgCopy, reqID)
 
 	default:
 		s.sendError(conn, state, fmt.Sprintf("unknown message type: %q", msg.Type))
 	}
+}
+
+func (s *Server) runPromptTurn(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	conn *websocket.Conn,
+	state *clientState,
+	msg api.ClientMessage,
+	reqID string,
+) {
+	defer func() {
+		cancel()
+		state.promptMu.Lock()
+		if state.activeRequestID == reqID {
+			state.activeCancel = nil
+			state.activeRequestID = ""
+		}
+		state.promptMu.Unlock()
+	}()
+
+	resourceURI := msg.ResourceURI
+	if resourceURI == "" {
+		resourceURI = state.activeResource
+	}
+	if resourceURI == "" {
+		resourceURI = "gke://fleet/overview"
+	}
+
+	statusFn := func(statusMsg string) {
+		if ctx.Err() != nil {
+			return
+		}
+		_ = s.writeJSON(conn, state, api.ServerMessage{
+			Type:      api.MsgTypeStatus,
+			RequestID: reqID,
+			Message:   statusMsg,
+		})
+	}
+
+	topo, _ := s.gke.GetTopology(ctx)
+	if ctx.Err() != nil {
+		return
+	}
+
+	// Step 1: Resolve natural-language intent via Gemini LLM (or deterministic fallback)
+	intent := s.agent.ResolveIntent(ctx, msg.Prompt, &api.TelemetryData{
+		ResourceURI: resourceURI,
+		Topology:    topo,
+	}, statusFn)
+	if ctx.Err() != nil {
+		return
+	}
+
+	// If prompt requested a scale stress test, apply it immediately
+	if intent.Archetype == ArchetypeScaleBenchmark {
+		preset := intent.TargetScenario
+		if preset == "" {
+			preset = "large"
+		}
+		newTopo, err := s.gke.ApplyScaleTest(ctx, api.ScaleTestConfig{Preset: preset})
+		if err == nil {
+			topo = newTopo
+			s.broadcastTopology(topo)
+			statusFn(fmt.Sprintf("⚡ Scale Stress Test Injected: %s (%d clusters) — synthesizing benchmark UI...", preset, len(topo.Clusters)))
+		}
+		resourceURI = "gke://fleet/scale-test"
+	}
+
+	// If prompt requested a chaos scenario injection, apply it immediately and transition to issues_matrix
+	if intent.Archetype == ArchetypeChaosScenario {
+		scenarioID := intent.TargetScenario
+		if scenarioID == "" {
+			scenarioID = "redis-oom"
+		}
+		newTopo, err := s.gke.ApplyScenario(ctx, scenarioID)
+		if err == nil {
+			topo = newTopo
+			if mockTelem, ok := s.telemetry.(*telemetry.MockProvider); ok {
+				mockTelem.SetScenario(scenarioID)
+			}
+			s.broadcastTopology(topo)
+			statusFn(fmt.Sprintf("⚡ Chaos Scenario Injected: %s — synthesizing fleet incident matrix...", scenarioID))
+		}
+		intent.Archetype = ArchetypeIssuesFleetMatrix
+		resourceURI = "gke://fleet/issues"
+	}
+
+	// Adjust resourceURI based on LLM-resolved intent
+	switch intent.Archetype {
+	case ArchetypeScaleBenchmark:
+		resourceURI = "gke://fleet/scale-test"
+	case ArchetypeIssuesFleetMatrix:
+		if intent.TargetCluster != "" {
+			resourceURI = "gke://cluster/" + intent.TargetCluster + "/issues"
+		} else {
+			resourceURI = "gke://fleet/issues"
+		}
+	case ArchetypeDynamicCustom:
+		if intent.TargetCluster != "" {
+			resourceURI = "gke://cluster/" + intent.TargetCluster + "/resources"
+		} else {
+			resourceURI = "gke://fleet/resources"
+		}
+	case ArchetypeNamespaceInventory:
+		ns := intent.TargetNamespace
+		if ns == "" {
+			ns = "production"
+		}
+		resourceURI = "gke://namespace/" + ns
+	case ArchetypeResourceLeaderboard:
+		resourceURI = "gke://fleet/leaderboard"
+	default:
+		if intent.TargetPod != "" && !strings.Contains(resourceURI, intent.TargetPod) {
+			resourceURI = "gke://production/" + intent.TargetPod
+		}
+	}
+
+	if ctx.Err() != nil {
+		return
+	}
+
+	// Step 2: Fetch telemetry and attach live topology
+	statusFn("Executing MCP telemetry & topology query...")
+	telem, err := s.telemetry.QueryLogs(ctx, resourceURI, 50)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		s.sendError(conn, state, fmt.Sprintf("telemetry query failed: %v", err))
+		return
+	}
+	if topo != nil {
+		telem.Topology = topo
+	}
+
+	// Step 3: Generate ArrowJS reactive UI with progressive streaming status updates
+	code, err := s.agent.GenerateStreamWithIntent(ctx, msg.Prompt, intent, telem, statusFn)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		s.sendError(conn, state, fmt.Sprintf("UI compilation failed: %v", err))
+		return
+	}
+
+	// Step 4: Deliver UI component with resolved Archetype metadata
+	_ = s.writeJSON(conn, state, api.ServerMessage{
+		Type:      api.MsgTypeUIComponent,
+		RequestID: reqID,
+		UI: &api.UIComponentData{
+			RequestID:       reqID,
+			ResourceURI:     resourceURI,
+			Prompt:          msg.Prompt,
+			Archetype:       string(intent.Archetype),
+			TargetNamespace: intent.TargetNamespace,
+			TargetCluster:   intent.TargetCluster,
+			TargetPod:       intent.TargetPod,
+			Code:            code,
+			Telemetry:       telem,
+		},
+	})
 }
 
 func (s *Server) sendTopology(ctx context.Context, conn *websocket.Conn, state *clientState) {

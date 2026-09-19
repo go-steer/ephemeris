@@ -33,8 +33,11 @@ export class IncidentPanel {
     this.isMinimized = false;
     this.isVisible = false;
     this.isPinned = false;
+    this.isGenerating = false;
+    this.activeRequestId = null;
     this.activeObject = null;
     this._onObjectPromptSubmit = null;
+    this._onCancelGeneration = null;
     this._generationTimer = null;
     this._generationStart = 0;
     this._generationSteps = [];
@@ -54,6 +57,32 @@ export class IncidentPanel {
     for (const child of this._childWindows) {
       child.onObjectPromptSubmit = fn;
     }
+  }
+
+  get onCancelGeneration() {
+    return this._onCancelGeneration;
+  }
+
+  set onCancelGeneration(fn) {
+    this._onCancelGeneration = fn;
+    for (const child of this._childWindows) {
+      child.onCancelGeneration = fn;
+    }
+  }
+
+  findWindowByRequestId(requestId) {
+    if (!requestId) {
+      return this._activeTargetWindow || this;
+    }
+    if (this.activeRequestId === requestId && this.isGenerating) {
+      return this;
+    }
+    for (const child of this._childWindows) {
+      if (child.activeRequestId === requestId && child.isGenerating) {
+        return child;
+      }
+    }
+    return null;
   }
 
   _getTargetWindow() {
@@ -89,6 +118,7 @@ export class IncidentPanel {
     const offsetIdx = (this._childWindows.length + 1) % 5;
     const child = new IncidentPanel(this.container, true, offsetIdx);
     child.onObjectPromptSubmit = this._onObjectPromptSubmit;
+    child.onCancelGeneration = this._onCancelGeneration;
     this._childWindows.push(child);
     this._activeTargetWindow = child;
     return child;
@@ -332,9 +362,14 @@ export class IncidentPanel {
     this.runtime.container.innerHTML = `
       <div class="ephemeris-widget streaming-skeleton">
         <div class="remediation-in-progress">
-          <div class="progress-title">
-            <span class="spinner-inline"></span>
-            <span>Gemini 3.8 Flash Live Synthesis & MCP Execution</span>
+          <div class="progress-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="spinner-inline"></span>
+              <span>Gemini 3.8 Flash Live Synthesis & MCP Execution</span>
+            </div>
+            <button id="panel-cancel-gen-btn" type="button" style="background:rgba(239,68,68,0.16);border:1px solid rgba(239,68,68,0.45);color:#f87171;border-radius:5px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer;">
+              ⏹ Stop
+            </button>
           </div>
           <div class="stepper-list">
             ${stepsHtml}
@@ -342,6 +377,50 @@ export class IncidentPanel {
         </div>
       </div>
     `;
+
+    const cancelBtn = this.runtime.container.querySelector('#panel-cancel-gen-btn');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.cancelGeneration(true);
+      });
+    }
+  }
+
+  /**
+   * Cancel an in-flight agent synthesis turn in this panel window.
+   *
+   * @param {boolean} [notifyBackend=true] - Whether to send a WebSocket cancel frame.
+   */
+  cancelGeneration(notifyBackend = true) {
+    const prevReqId = this.activeRequestId;
+    this._stopGenerationTimer();
+    this.isGenerating = false;
+    this.activeRequestId = null;
+    this._generationSteps = [];
+
+    this.statusBadge.textContent = 'CANCELLED';
+    this.statusBadge.className = 'panel-status-pill status-pending';
+    this.ttiBadge.textContent = 'TTI: STOPPED';
+
+    if (this.runtime && this.runtime.container) {
+      this.runtime.container.innerHTML = `
+        <div class="ephemeris-widget">
+          <div class="remediation-in-progress" style="border-color:rgba(245,158,11,0.35);background:rgba(245,158,11,0.06);">
+            <div class="progress-title" style="color:#fbbf24;">
+              <span>⏹ Agent Turn Cancelled</span>
+            </div>
+            <div style="font-size:12px;color:#94a3b8;margin-top:6px;line-height:1.5;">
+              The previous agent execution was interrupted. Enter a new prompt below or click a quick-action chip to launch a fresh turn.
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (notifyBackend && this._onCancelGeneration) {
+      this._onCancelGeneration(prevReqId || '');
+    }
   }
 
   /**
@@ -350,18 +429,31 @@ export class IncidentPanel {
    *
    * @param {string} title - Title for the panel header.
    * @param {string} initialMessage - Initial synthesis step description.
+   * @param {string} [requestId=''] - Optional request ID for correlation & cancellation.
+   * @return {string} Active request ID assigned to the target panel window.
    */
   startGeneration(
     title = 'Synthesizing UI...',
-    initialMessage = 'Routing intent via gemini-3.8-flash...'
+    initialMessage = 'Routing intent via gemini-3.8-flash...',
+    requestId = ''
   ) {
     const win = this._getTargetWindow();
     if (win !== this) {
-      return win.startGeneration(title, initialMessage);
+      return win.startGeneration(title, initialMessage, requestId);
+    }
+
+    // If this unpinned window already had an in-flight agent turn, cancel it before rewriting!
+    if (this.isGenerating && this._onCancelGeneration) {
+      this._onCancelGeneration(this.activeRequestId || '');
     }
 
     this._stopGenerationTimer();
     this.runtime.clear(); // Immediate t = 0ms sandbox wipe!
+
+    const assignedReqId =
+      requestId || `req-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    this.isGenerating = true;
+    this.activeRequestId = assignedReqId;
 
     this.titleText.textContent = title;
     this.statusBadge.textContent = 'STREAMING';
@@ -383,21 +475,36 @@ export class IncidentPanel {
       const elapsed = ((performance.now() - this._generationStart) / 1000).toFixed(1);
       this.ttiBadge.textContent = `TTI: ${elapsed}s...`;
     }, 100);
+
+    return assignedReqId;
   }
 
   /**
    * Append a live progressive step from WebSocket status updates without re-compiling ArrowJS.
    *
    * @param {string} message - Status message from backend orchestrator.
+   * @param {string} [requestId=''] - Optional request ID to correlate status updates.
    */
-  appendGenerationStep(message) {
+  appendGenerationStep(message, requestId = '') {
+    if (!this.isChild && requestId) {
+      const targetWin = this.findWindowByRequestId(requestId);
+      if (!targetWin) {
+        return; // Ignore status step from a cancelled or superseded turn
+      }
+      if (targetWin !== this) {
+        return targetWin.appendGenerationStep(message, '');
+      }
+    }
     const win = this.isChild ? this : this._activeTargetWindow || this;
     if (win !== this) {
-      return win.appendGenerationStep(message);
+      return win.appendGenerationStep(message, requestId);
     }
     if (!message) return;
+    if (!this.isGenerating && requestId) {
+      return;
+    }
     if (this._generationSteps.length === 0) {
-      this.startGeneration(this.titleText.textContent || 'Synthesizing UI...', message);
+      this.startGeneration(this.titleText.textContent || 'Synthesizing UI...', message, requestId);
       return;
     }
     if (this._generationSteps[this._generationSteps.length - 1] !== message) {
@@ -612,12 +719,23 @@ export class IncidentPanel {
    * @param {object} meta - Additional metadata { podId, status, durationMs }.
    */
   mount(code, telemetry = {}, meta = {}) {
+    if (!this.isChild && meta.requestId) {
+      const targetWin = this.findWindowByRequestId(meta.requestId);
+      if (!targetWin) {
+        return; // Drop UI payload from a cancelled or superseded turn
+      }
+      if (targetWin !== this) {
+        return targetWin.mount(code, telemetry, { ...meta, requestId: '' });
+      }
+    }
     const win = this.isChild ? this : this._activeTargetWindow || this._getTargetWindow();
     if (win !== this) {
       return win.mount(code, telemetry, meta);
     }
 
     this._stopGenerationTimer();
+    this.isGenerating = false;
+    this.activeRequestId = null;
     const podId = meta.podId || telemetry.pod_id || 'Pod';
     const status = meta.status || (telemetry.metrics && telemetry.metrics.status) || 'Running';
 
@@ -648,14 +766,27 @@ export class IncidentPanel {
    *
    * @param {string} statusMessage - Current streaming/reasoning step message.
    * @param {string} podId - Target pod name.
+   * @param {string} [requestId=''] - Optional request ID for correlation.
    */
-  showStreamingProgress(statusMessage, podId = 'Pod') {
+  showStreamingProgress(statusMessage, podId = 'Pod', requestId = '') {
+    if (!this.isChild && requestId) {
+      const targetWin = this.findWindowByRequestId(requestId);
+      if (!targetWin) {
+        return; // Drop status step from a cancelled or superseded turn
+      }
+      if (targetWin !== this) {
+        return targetWin.showStreamingProgress(statusMessage, podId, '');
+      }
+    }
     const win = this.isChild ? this : this._activeTargetWindow || this._getTargetWindow();
     if (win !== this) {
-      return win.showStreamingProgress(statusMessage, podId);
+      return win.showStreamingProgress(statusMessage, podId, requestId);
     }
     if (!this._generationTimer && this._generationSteps.length === 0) {
-      this.startGeneration(podId, statusMessage);
+      if (requestId && !this.isGenerating) {
+        return;
+      }
+      this.startGeneration(podId, statusMessage, requestId);
       return;
     }
     if (podId) {
@@ -664,7 +795,7 @@ export class IncidentPanel {
         this.objectTagEl.textContent = `@${podId}`;
       }
     }
-    this.appendGenerationStep(statusMessage);
+    this.appendGenerationStep(statusMessage, requestId);
   }
 
   show() {
@@ -677,6 +808,11 @@ export class IncidentPanel {
   }
 
   hide() {
+    if (this.isGenerating && this._onCancelGeneration) {
+      this._onCancelGeneration(this.activeRequestId || '');
+    }
+    this.isGenerating = false;
+    this.activeRequestId = null;
     this._stopGenerationTimer();
     this.panelEl.style.display = 'none';
     this.isVisible = false;

@@ -34,6 +34,8 @@ const (
 	MsgTypeScaleTest ClientMessageType = "scale_test"
 	// MsgTypeSetMode switches between 'live' (GKE SDK + client-go + mast/pkg/mcp) and 'mock' telemetry modes.
 	MsgTypeSetMode ClientMessageType = "set_mode"
+	// MsgTypeCancel interrupts and cancels an in-flight agent prompt turn.
+	MsgTypeCancel ClientMessageType = "cancel"
 )
 
 // ScaleTestConfig defines parameters for synthetic large-scale topology stress testing.
@@ -48,6 +50,7 @@ type ScaleTestConfig struct {
 // ClientMessage is sent from the browser client over WebSocket.
 type ClientMessage struct {
 	Type              ClientMessageType `json:"type"`
+	RequestID         string            `json:"request_id,omitempty"`
 	Mode              string            `json:"mode,omitempty"` // "live" or "mock"
 	SelectedNodeID    string            `json:"selected_node_id,omitempty"`
 	ResourceURI       string            `json:"resource_uri,omitempty"`
@@ -77,6 +80,7 @@ const (
 // ServerMessage is pushed from the orchestrator over WebSocket.
 type ServerMessage struct {
 	Type      ServerMessageType `json:"type"`
+	RequestID string            `json:"request_id,omitempty"`
 	Message   string            `json:"message,omitempty"`
 	Topology  *TopologyData     `json:"topology,omitempty"`
 	Telemetry *TelemetryData    `json:"telemetry,omitempty"`
@@ -181,6 +185,7 @@ type TelemetryData struct {
 
 // UIComponentData contains compiled ArrowJS template code and bound telemetry.
 type UIComponentData struct {
+	RequestID       string         `json:"request_id,omitempty"`
 	ResourceURI     string         `json:"resource_uri"`
 	Prompt          string         `json:"prompt"`
 	Archetype       string         `json:"archetype,omitempty"`

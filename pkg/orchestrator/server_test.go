@@ -124,3 +124,46 @@ func TestServer_WebSocketWorkflow(t *testing.T) {
 		t.Errorf("expected to receive ui_component message from orchestrator")
 	}
 }
+
+func TestServer_CancelPrompt(t *testing.T) {
+	ctx := context.Background()
+	agent := NewAgent(ctx, AgentConfig{ForceMock: true})
+	server := NewServer(ServerConfig{}, gke.NewMockProvider(), telemetry.NewMockProvider(), agent)
+
+	testServer := httptest.NewServer(server.Routes())
+	defer testServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer func() { _ = wsConn.Close() }()
+
+	// Read initial topology
+	var topoMsg api.ServerMessage
+	_ = wsConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := wsConn.ReadJSON(&topoMsg); err != nil {
+		t.Fatalf("failed to read initial topology: %v", err)
+	}
+
+	// Send cancel message with request_id
+	if err := wsConn.WriteJSON(api.ClientMessage{
+		Type:      api.MsgTypeCancel,
+		RequestID: "req-cancel-test-1",
+	}); err != nil {
+		t.Fatalf("failed to write cancel message: %v", err)
+	}
+
+	var resp api.ServerMessage
+	_ = wsConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := wsConn.ReadJSON(&resp); err != nil {
+		t.Fatalf("failed to read cancel status message: %v", err)
+	}
+	if resp.Type != api.MsgTypeStatus || !strings.Contains(resp.Message, "cancelled") {
+		t.Errorf("expected cancelled status message, got %+v", resp)
+	}
+	if resp.RequestID != "req-cancel-test-1" {
+		t.Errorf("expected RequestID req-cancel-test-1, got %s", resp.RequestID)
+	}
+}
