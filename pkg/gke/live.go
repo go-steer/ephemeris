@@ -74,7 +74,7 @@ func NewLiveProvider(ctx context.Context, projectID string, mcpClient *mcp.Clien
 		tokenSource: ts,
 		mcpClient:   mcpClient,
 		fallback:    NewMockProvider(),
-		cacheTTL:    60 * time.Second,
+		cacheTTL:    6 * time.Second,
 		clientsets:  make(map[string]*kubernetes.Clientset),
 		clusterLocs: make(map[string]string),
 	}, nil

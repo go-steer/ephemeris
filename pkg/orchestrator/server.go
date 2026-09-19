@@ -89,7 +89,6 @@ func NewServer(cfg ServerConfig, gkeProv gke.Provider, telemProv telemetry.Provi
 // between 'live' (gke-demos-345619) and 'mock' chaos simulation from the HUD without restarting.
 func (s *Server) ConfigureLiveProviders(liveGKE gke.Provider, liveTelem telemetry.Provider, projectID string, initialMode string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.liveGKE = liveGKE
 	s.liveTelem = liveTelem
 	s.projectID = projectID
@@ -97,6 +96,37 @@ func (s *Server) ConfigureLiveProviders(liveGKE gke.Provider, liveTelem telemetr
 		s.mode = "live"
 		s.gke = liveGKE
 		s.telemetry = liveTelem
+	}
+	s.mu.Unlock()
+
+	if liveGKE != nil {
+		go s.runLiveSyncLoop()
+	}
+}
+
+func (s *Server) runLiveSyncLoop() {
+	ticker := time.NewTicker(8 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.Lock()
+		isLive := s.mode == "live" && s.liveGKE != nil
+		hasClients := len(s.clients) > 0
+		liveProv := s.liveGKE
+		proj := s.projectID
+		s.mu.Unlock()
+
+		if !isLive || !hasClients {
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+		topo, err := liveProv.GetTopology(ctx)
+		cancel()
+		if err == nil && topo != nil {
+			topo.Mode = "live"
+			topo.ProjectID = proj
+			s.broadcastTopology(topo)
+		}
 	}
 }
 
