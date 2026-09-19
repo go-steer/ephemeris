@@ -31,6 +31,7 @@ import (
 	"google.golang.org/api/option"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -215,17 +216,20 @@ func (p *LiveProvider) inspectCluster(ctx context.Context, cluster *container.Cl
 
 func (p *LiveProvider) fetchClusterViaClientGo(ctx context.Context, clusterName string, cs *kubernetes.Clientset) ([]api.NamespaceNode, error) {
 	var (
-		podList *corev1.PodList
-		depList *appsv1.DeploymentList
-		rsList  *appsv1.ReplicaSetList
-		stsList *appsv1.StatefulSetList
-		dsList  *appsv1.DaemonSetList
-		svcList *corev1.ServiceList
-		podErr  error
+		podList   *corev1.PodList
+		depList   *appsv1.DeploymentList
+		rsList    *appsv1.ReplicaSetList
+		stsList   *appsv1.StatefulSetList
+		dsList    *appsv1.DaemonSetList
+		svcList   *corev1.ServiceList
+		ingList   *networkingv1.IngressList
+		gwList    *k8sGatewayList
+		routeList *k8sHTTPRouteList
+		podErr    error
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(9)
 	go func() {
 		defer wg.Done()
 		podList, podErr = cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{Limit: 250})
@@ -250,13 +254,127 @@ func (p *LiveProvider) fetchClusterViaClientGo(ctx context.Context, clusterName 
 		defer wg.Done()
 		svcList, _ = cs.CoreV1().Services("").List(ctx, metav1.ListOptions{Limit: 150})
 	}()
+	go func() {
+		defer wg.Done()
+		ingList, _ = cs.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{Limit: 100})
+	}()
+	go func() {
+		defer wg.Done()
+		gwList = fetchGatewayListViaClientGo(ctx, cs)
+	}()
+	go func() {
+		defer wg.Done()
+		routeList = fetchHTTPRouteListViaClientGo(ctx, cs)
+	}()
 	wg.Wait()
 
 	if podErr != nil || podList == nil {
 		return nil, fmt.Errorf("client-go Pods.List failed: %w", podErr)
 	}
 
-	return buildNamespacesFromTypedLists(clusterName, podList, depList, rsList, stsList, dsList, svcList), nil
+	return buildNamespacesFromTypedLists(clusterName, podList, depList, rsList, stsList, dsList, svcList, ingList, gwList, routeList), nil
+}
+
+// k8sGatewayList represents a Gateway API (gateway.networking.k8s.io/v1 or v1beta1) GatewayList.
+type k8sGatewayList struct {
+	APIVersion string       `json:"apiVersion"`
+	Items      []k8sGateway `json:"items"`
+}
+
+type k8sGateway struct {
+	Metadata metav1.ObjectMeta `json:"metadata"`
+	Spec     struct {
+		GatewayClassName string `json:"gatewayClassName"`
+		Listeners        []struct {
+			Name     string `json:"name"`
+			Port     int32  `json:"port"`
+			Protocol string `json:"protocol"`
+		} `json:"listeners"`
+		Addresses []struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		} `json:"addresses"`
+	} `json:"spec"`
+	Status struct {
+		Addresses []struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		} `json:"addresses"`
+		Conditions []metav1.Condition `json:"conditions"`
+	} `json:"status"`
+}
+
+// k8sHTTPRouteList represents a Gateway API (gateway.networking.k8s.io/v1 or v1beta1) HTTPRouteList.
+type k8sHTTPRouteList struct {
+	APIVersion string         `json:"apiVersion"`
+	Items      []k8sHTTPRoute `json:"items"`
+}
+
+type k8sHTTPRoute struct {
+	Metadata metav1.ObjectMeta `json:"metadata"`
+	Spec     struct {
+		Hostnames  []string `json:"hostnames"`
+		ParentRefs []struct {
+			Group     *string `json:"group,omitempty"`
+			Kind      *string `json:"kind,omitempty"`
+			Namespace *string `json:"namespace,omitempty"`
+			Name      string  `json:"name"`
+		} `json:"parentRefs"`
+		Rules []struct {
+			BackendRefs []struct {
+				Group     *string `json:"group,omitempty"`
+				Kind      *string `json:"kind,omitempty"`
+				Namespace *string `json:"namespace,omitempty"`
+				Name      string  `json:"name"`
+				Port      *int32  `json:"port,omitempty"`
+			} `json:"backendRefs"`
+		} `json:"rules"`
+	} `json:"spec"`
+	Status struct {
+		Parents []struct {
+			Conditions []metav1.Condition `json:"conditions"`
+		} `json:"parents"`
+	} `json:"status"`
+}
+
+func fetchGatewayListViaClientGo(ctx context.Context, cs *kubernetes.Clientset) *k8sGatewayList {
+	for _, path := range []string{
+		"/apis/gateway.networking.k8s.io/v1/gateways",
+		"/apis/gateway.networking.k8s.io/v1beta1/gateways",
+	} {
+		raw, err := cs.NetworkingV1().RESTClient().Get().AbsPath(path).DoRaw(ctx)
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		var list k8sGatewayList
+		if err := json.Unmarshal(raw, &list); err == nil && len(list.Items) > 0 {
+			if list.APIVersion == "" {
+				list.APIVersion = "gateway.networking.k8s.io/v1"
+			}
+			return &list
+		}
+	}
+	return nil
+}
+
+func fetchHTTPRouteListViaClientGo(ctx context.Context, cs *kubernetes.Clientset) *k8sHTTPRouteList {
+	for _, path := range []string{
+		"/apis/gateway.networking.k8s.io/v1/httproutes",
+		"/apis/gateway.networking.k8s.io/v1beta1/httproutes",
+	} {
+		raw, err := cs.NetworkingV1().RESTClient().Get().AbsPath(path).DoRaw(ctx)
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		var list k8sHTTPRouteList
+		if err := json.Unmarshal(raw, &list); err == nil && len(list.Items) > 0 {
+			if list.APIVersion == "" {
+				list.APIVersion = "gateway.networking.k8s.io/v1"
+			}
+			return &list
+		}
+	}
+	return nil
 }
 
 func isSystemNamespace(ns string) bool {
@@ -272,6 +390,9 @@ func buildNamespacesFromTypedLists(
 	stsList *appsv1.StatefulSetList,
 	dsList *appsv1.DaemonSetList,
 	svcList *corev1.ServiceList,
+	ingList *networkingv1.IngressList,
+	gwList *k8sGatewayList,
+	routeList *k8sHTTPRouteList,
 ) []api.NamespaceNode {
 	nsPods := make(map[string][]api.PodNode)
 	nsRawPods := make(map[string][]corev1.Pod)
@@ -455,25 +576,61 @@ func buildNamespacesFromTypedLists(
 		nsRawPods[pod.Namespace] = append(nsRawPods[pod.Namespace], pod)
 	}
 
-	// 6. Services (match Pod label selectors)
+	// 6. Services (match Pod label selectors and link to owning workload controllers or Pods)
 	if svcList != nil {
 		for _, svc := range svcList.Items {
 			if svc.Name == "kubernetes" && svc.Namespace == "default" {
 				continue
 			}
-			if _, hasPods := nsPods[svc.Namespace]; !hasPods {
-				continue
+			if isSystemNamespace(svc.Namespace) {
+				if _, hasPods := nsPods[svc.Namespace]; !hasPods {
+					continue
+				}
 			}
 			ensureNS(svc.Namespace)
 			id := fmt.Sprintf("svc-%s-%s-%s", clusterName, svc.Namespace, svc.Name)
 			var children []string
+			seenTargets := make(map[string]bool)
+			addTarget := func(targetID string) {
+				if targetID != "" && !seenTargets[targetID] {
+					seenTargets[targetID] = true
+					children = append(children, targetID)
+				}
+			}
 			if len(svc.Spec.Selector) > 0 {
 				sel := labels.SelectorFromSet(svc.Spec.Selector)
 				for _, p := range nsRawPods[svc.Namespace] {
 					if sel.Matches(labels.Set(p.Labels)) {
-						children = append(children, fmt.Sprintf("pod-%s-%s-%s", clusterName, p.Namespace, p.Name))
+						podID := fmt.Sprintf("pod-%s-%s-%s", clusterName, p.Namespace, p.Name)
+						var topControllerID string
+						for _, o := range p.OwnerReferences {
+							if parentID, ok := uidToResID[string(o.UID)]; ok {
+								topControllerID = parentID
+								if parentRes, exists := nsRes[p.Namespace][parentID]; exists && parentRes.OwnerID != "" {
+									topControllerID = parentRes.OwnerID
+								}
+								break
+							}
+						}
+						if topControllerID != "" {
+							addTarget(topControllerID)
+							if ctrlRes, exists := nsRes[p.Namespace][topControllerID]; exists && ctrlRes.OwnerID == "" {
+								ctrlRes.OwnerID = id
+								ctrlRes.OwnerKind = "Service"
+							}
+						} else {
+							addTarget(podID)
+						}
 					}
 				}
+			}
+			var portParts []string
+			for _, sp := range svc.Spec.Ports {
+				portParts = append(portParts, fmt.Sprintf("%d/%s", sp.Port, sp.Protocol))
+			}
+			portSummary := ""
+			if len(portParts) > 0 {
+				portSummary = " [" + strings.Join(portParts, ", ") + "]"
 			}
 			nsRes[svc.Namespace][id] = &api.K8sResource{
 				ID:          id,
@@ -485,23 +642,225 @@ func buildNamespacesFromTypedLists(
 				Status:      "Healthy",
 				ChildrenIDs: children,
 				ConnectedTo: children,
-				Summary:     fmt.Sprintf("Service %s (%s)", svc.Name, svc.Spec.Type),
+				Summary:     fmt.Sprintf("Service %s (%s%s)", svc.Name, svc.Spec.Type, portSummary),
 			}
 		}
 	}
 
-	var result []api.NamespaceNode
-	for ns, pods := range nsPods {
-		if len(pods) == 0 {
-			continue
+	// 7. Gateway API (Gateway & HTTPRoute) and Kubernetes Ingress
+	if gwList != nil {
+		apiVer := gwList.APIVersion
+		if apiVer == "" {
+			apiVer = "gateway.networking.k8s.io/v1"
 		}
+		for _, gw := range gwList.Items {
+			ensureNS(gw.Metadata.Namespace)
+			id := fmt.Sprintf("gw-%s-%s-%s", clusterName, gw.Metadata.Namespace, gw.Metadata.Name)
+			status := "Healthy"
+			for _, cond := range gw.Status.Conditions {
+				if (cond.Type == "Programmed" || cond.Type == "Accepted") && cond.Status == metav1.ConditionFalse {
+					status = "Degraded"
+				}
+			}
+			var addrs []string
+			for _, a := range gw.Status.Addresses {
+				if a.Value != "" {
+					addrs = append(addrs, a.Value)
+				}
+			}
+			if len(addrs) == 0 {
+				for _, a := range gw.Spec.Addresses {
+					if a.Value != "" {
+						addrs = append(addrs, a.Value)
+					}
+				}
+			}
+			var listeners []string
+			for _, l := range gw.Spec.Listeners {
+				listeners = append(listeners, fmt.Sprintf("%s:%d", l.Protocol, l.Port))
+			}
+			extra := gw.Spec.GatewayClassName
+			if len(addrs) > 0 {
+				extra += ", " + strings.Join(addrs, ", ")
+			}
+			if len(listeners) > 0 {
+				extra += " [" + strings.Join(listeners, ", ") + "]"
+			}
+			nsRes[gw.Metadata.Namespace][id] = &api.K8sResource{
+				ID:         id,
+				Kind:       "Gateway",
+				APIVersion: apiVer,
+				Name:       gw.Metadata.Name,
+				Namespace:  gw.Metadata.Namespace,
+				Cluster:    clusterName,
+				Status:     status,
+				IsCRD:      true,
+				Summary:    fmt.Sprintf("Gateway %s (%s)", gw.Metadata.Name, extra),
+			}
+		}
+	}
+
+	if routeList != nil {
+		apiVer := routeList.APIVersion
+		if apiVer == "" {
+			apiVer = "gateway.networking.k8s.io/v1"
+		}
+		for _, rt := range routeList.Items {
+			ensureNS(rt.Metadata.Namespace)
+			id := fmt.Sprintf("route-%s-%s-%s", clusterName, rt.Metadata.Namespace, rt.Metadata.Name)
+			var ownerID, ownerKind string
+			for _, pref := range rt.Spec.ParentRefs {
+				if pref.Kind != nil && *pref.Kind != "" && *pref.Kind != "Gateway" {
+					continue
+				}
+				parentNS := rt.Metadata.Namespace
+				if pref.Namespace != nil && *pref.Namespace != "" {
+					parentNS = *pref.Namespace
+				}
+				gwID := fmt.Sprintf("gw-%s-%s-%s", clusterName, parentNS, pref.Name)
+				ownerID = gwID
+				ownerKind = "Gateway"
+				if gwRes, exists := nsRes[parentNS][gwID]; exists {
+					gwRes.ChildrenIDs = append(gwRes.ChildrenIDs, id)
+					gwRes.ConnectedTo = append(gwRes.ConnectedTo, id)
+				}
+				break
+			}
+
+			var routeTargets []string
+			var backendNames []string
+			seenBackends := make(map[string]bool)
+			for _, rule := range rt.Spec.Rules {
+				for _, bref := range rule.BackendRefs {
+					if bref.Name == "" {
+						continue
+					}
+					backendNS := rt.Metadata.Namespace
+					if bref.Namespace != nil && *bref.Namespace != "" {
+						backendNS = *bref.Namespace
+					}
+					svcID := fmt.Sprintf("svc-%s-%s-%s", clusterName, backendNS, bref.Name)
+					if !seenBackends[svcID] {
+						seenBackends[svcID] = true
+						routeTargets = append(routeTargets, svcID)
+						if bref.Port != nil {
+							backendNames = append(backendNames, fmt.Sprintf("%s:%d", bref.Name, *bref.Port))
+						} else {
+							backendNames = append(backendNames, bref.Name)
+						}
+					}
+					if svcRes, exists := nsRes[backendNS][svcID]; exists {
+						svcRes.OwnerID = id
+						svcRes.OwnerKind = "HTTPRoute"
+					}
+				}
+			}
+
+			hostSummary := "*"
+			if len(rt.Spec.Hostnames) > 0 {
+				hostSummary = strings.Join(rt.Spec.Hostnames, ", ")
+			}
+			backendSummary := ""
+			if len(backendNames) > 0 {
+				backendSummary = " -> " + strings.Join(backendNames, ", ")
+			}
+			nsRes[rt.Metadata.Namespace][id] = &api.K8sResource{
+				ID:          id,
+				Kind:        "HTTPRoute",
+				APIVersion:  apiVer,
+				Name:        rt.Metadata.Name,
+				Namespace:   rt.Metadata.Namespace,
+				Cluster:     clusterName,
+				Status:      "Healthy",
+				IsCRD:       true,
+				OwnerID:     ownerID,
+				OwnerKind:   ownerKind,
+				ChildrenIDs: routeTargets,
+				ConnectedTo: routeTargets,
+				Summary:     fmt.Sprintf("HTTPRoute %s (hosts: %s%s)", rt.Metadata.Name, hostSummary, backendSummary),
+			}
+		}
+	}
+
+	if ingList != nil {
+		for _, ing := range ingList.Items {
+			ensureNS(ing.Namespace)
+			id := fmt.Sprintf("route-%s-%s-%s", clusterName, ing.Namespace, ing.Name)
+			if _, exists := nsRes[ing.Namespace][id]; exists {
+				continue
+			}
+			var routeTargets []string
+			var hosts []string
+			seenBackends := make(map[string]bool)
+			if ing.Spec.DefaultBackend != nil && ing.Spec.DefaultBackend.Service != nil && ing.Spec.DefaultBackend.Service.Name != "" {
+				svcID := fmt.Sprintf("svc-%s-%s-%s", clusterName, ing.Namespace, ing.Spec.DefaultBackend.Service.Name)
+				seenBackends[svcID] = true
+				routeTargets = append(routeTargets, svcID)
+				if svcRes, exists := nsRes[ing.Namespace][svcID]; exists && svcRes.OwnerID == "" {
+					svcRes.OwnerID = id
+					svcRes.OwnerKind = "HTTPRoute"
+				}
+			}
+			for _, rule := range ing.Spec.Rules {
+				if rule.Host != "" {
+					hosts = append(hosts, rule.Host)
+				}
+				if rule.HTTP != nil {
+					for _, p := range rule.HTTP.Paths {
+						if p.Backend.Service != nil && p.Backend.Service.Name != "" {
+							svcID := fmt.Sprintf("svc-%s-%s-%s", clusterName, ing.Namespace, p.Backend.Service.Name)
+							if !seenBackends[svcID] {
+								seenBackends[svcID] = true
+								routeTargets = append(routeTargets, svcID)
+							}
+							if svcRes, exists := nsRes[ing.Namespace][svcID]; exists && svcRes.OwnerID == "" {
+								svcRes.OwnerID = id
+								svcRes.OwnerKind = "HTTPRoute"
+							}
+						}
+					}
+				}
+			}
+			hostSummary := "*"
+			if len(hosts) > 0 {
+				hostSummary = strings.Join(hosts, ", ")
+			}
+			nsRes[ing.Namespace][id] = &api.K8sResource{
+				ID:          id,
+				Kind:        "HTTPRoute",
+				APIVersion:  "networking.k8s.io/v1",
+				Name:        ing.Name,
+				Namespace:   ing.Namespace,
+				Cluster:     clusterName,
+				Status:      "Healthy",
+				ChildrenIDs: routeTargets,
+				ConnectedTo: routeTargets,
+				Summary:     fmt.Sprintf("Ingress %s (hosts: %s)", ing.Name, hostSummary),
+			}
+		}
+	}
+
+	allNS := make(map[string]bool)
+	for ns := range nsPods {
+		allNS[ns] = true
+	}
+	for ns := range nsRes {
+		allNS[ns] = true
+	}
+
+	var result []api.NamespaceNode
+	for ns := range allNS {
+		pods := nsPods[ns]
 		var resources []api.K8sResource
 		for _, r := range nsRes[ns] {
 			// Skip system controllers that have no visible pods after system capping
-			if isSystemNamespace(ns) && r.Kind != "Service" && len(r.ChildrenIDs) == 0 {
+			if isSystemNamespace(ns) && r.Kind != "Service" && r.Kind != "Gateway" && r.Kind != "HTTPRoute" && len(r.ChildrenIDs) == 0 {
 				continue
 			}
 			resources = append(resources, *r)
+		}
+		if len(pods) == 0 && len(resources) == 0 {
+			continue
 		}
 		sort.Slice(resources, func(i, j int) bool {
 			return resources[i].Name < resources[j].Name
