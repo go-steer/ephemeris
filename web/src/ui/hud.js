@@ -33,6 +33,7 @@ export class HUDOverlay {
     this.onScenarioSelect = null;
     this.onScaleTestSelect = null;
     this.onLayerFilterChange = null;
+    this.onDataSourceModeChange = null;
     this.onClearSelection = null;
 
     this._createDOM();
@@ -51,13 +52,17 @@ export class HUDOverlay {
         </div>
 
         <div class="cluster-summary">
+          <div class="layer-filter-group datasource-toggle-group" id="hud-datasource-toggle" title="Switch Telemetry Data Source: Live GKE Clusters (gke-demos-345619) vs. Mock Chaos Simulator">
+            <button class="layer-pill active" id="hud-btn-source-mock" data-source="mock">🧪 Mock Sim</button>
+            <button class="layer-pill" id="hud-btn-source-live" data-source="live">🌐 Live GKE</button>
+          </div>
           <div class="cluster-select-wrapper">
             <span class="cluster-select-icon">&#x1F310;</span>
             <select id="hud-cluster-select" class="cluster-select-dropdown" aria-label="Select GKE Cluster">
               <option value="production-us-central1">production-us-central1 [us-central1] (1 Alert)</option>
             </select>
           </div>
-          <div class="cluster-select-wrapper scenario-select-wrapper">
+          <div class="cluster-select-wrapper scenario-select-wrapper" id="hud-scenario-wrapper">
             <span class="cluster-select-icon">⚡</span>
             <select id="hud-scenario-select" class="cluster-select-dropdown scenario-select-dropdown" aria-label="Inject Chaos Scenario" title="Inject Cloud Infrastructure Chaos Scenario">
               <option value="default">Scenario: Baseline (Payment Crash)</option>
@@ -258,7 +263,24 @@ export class HUDOverlay {
       });
     }
 
-    const layerPills = this.container.querySelectorAll('.layer-pill');
+    const btnSourceMock = this.container.querySelector('#hud-btn-source-mock');
+    const btnSourceLive = this.container.querySelector('#hud-btn-source-live');
+    if (btnSourceMock && btnSourceLive) {
+      btnSourceMock.addEventListener('click', () => {
+        this.setDataSourceMode('mock');
+        if (this.onDataSourceModeChange) {
+          this.onDataSourceModeChange('mock');
+        }
+      });
+      btnSourceLive.addEventListener('click', () => {
+        this.setDataSourceMode('live');
+        if (this.onDataSourceModeChange) {
+          this.onDataSourceModeChange('live');
+        }
+      });
+    }
+
+    const layerPills = this.container.querySelectorAll('#hud-layer-group .layer-pill');
     layerPills.forEach((pill) => {
       pill.addEventListener('click', () => {
         layerPills.forEach((p) => p.classList.remove('active'));
@@ -298,6 +320,25 @@ export class HUDOverlay {
         submitPrompt(query);
       });
     });
+  }
+
+  setDataSourceMode(mode = 'mock', projectId = '') {
+    const btnMock = this.container.querySelector('#hud-btn-source-mock');
+    const btnLive = this.container.querySelector('#hud-btn-source-live');
+    const scenarioWrapper = this.container.querySelector('#hud-scenario-wrapper');
+    const scaleWrapper = this.container.querySelector('.scale-select-wrapper');
+    const isLive = mode === 'live';
+    if (btnMock) btnMock.classList.toggle('active', !isLive);
+    if (btnLive) {
+      btnLive.classList.toggle('active', isLive);
+      btnLive.textContent = isLive && projectId ? `🌐 Live GKE (${projectId})` : '🌐 Live GKE';
+    }
+    if (scenarioWrapper) {
+      scenarioWrapper.style.display = isLive ? 'none' : '';
+    }
+    if (scaleWrapper) {
+      scaleWrapper.style.display = isLive ? 'none' : '';
+    }
   }
 
   setScenario(scenarioId = 'default') {

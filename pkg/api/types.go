@@ -32,6 +32,8 @@ const (
 	MsgTypeScenario ClientMessageType = "scenario"
 	// MsgTypeScaleTest triggers a fleet scale stress test topology generation.
 	MsgTypeScaleTest ClientMessageType = "scale_test"
+	// MsgTypeSetMode switches between 'live' (GKE SDK + client-go + mast/pkg/mcp) and 'mock' telemetry modes.
+	MsgTypeSetMode ClientMessageType = "set_mode"
 )
 
 // ScaleTestConfig defines parameters for synthetic large-scale topology stress testing.
@@ -46,6 +48,7 @@ type ScaleTestConfig struct {
 // ClientMessage is sent from the browser client over WebSocket.
 type ClientMessage struct {
 	Type              ClientMessageType `json:"type"`
+	Mode              string            `json:"mode,omitempty"` // "live" or "mock"
 	SelectedNodeID    string            `json:"selected_node_id,omitempty"`
 	ResourceURI       string            `json:"resource_uri,omitempty"`
 	Prompt            string            `json:"prompt,omitempty"`
@@ -140,6 +143,8 @@ type ClusterNode struct {
 
 // TopologyData contains the full cluster hierarchy.
 type TopologyData struct {
+	Mode       string        `json:"mode,omitempty"`       // "live" or "mock"
+	ProjectID  string        `json:"project_id,omitempty"` // e.g. "gke-demos-345619"
 	ScenarioID string        `json:"scenario_id,omitempty"`
 	Clusters   []ClusterNode `json:"clusters"`
 }

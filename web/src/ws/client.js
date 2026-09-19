@@ -199,6 +199,13 @@ export class WebSocketClient {
     });
   }
 
+  sendSetMode(mode = 'live') {
+    return this._send({
+      type: 'set_mode',
+      mode,
+    });
+  }
+
   disconnect() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

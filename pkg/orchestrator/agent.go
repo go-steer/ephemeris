@@ -31,11 +31,13 @@ import (
 
 // AgentConfig configures the Vertex AI client and model target.
 type AgentConfig struct {
-	Model         string
-	Location      string
-	ProjectID     string
-	ForceMock     bool
-	LookoutClient *mcp.LookoutClient
+	Model            string
+	Location         string
+	ProjectID        string
+	ForceMock        bool
+	LookoutClient    *mcp.LookoutClient
+	GKEMCPClient     *mcp.Client
+	LoggingMCPClient *mcp.Client
 }
 
 // LLMIntentResult holds the Gemini-classified intent for a natural-language prompt.
@@ -69,9 +71,12 @@ func NewAgent(ctx context.Context, cfg AgentConfig) *Agent {
 		cfg.Location = "global"
 	}
 
+	harness := NewMastHarness(cfg.LookoutClient)
+	harness.ConfigureGoogleMCP(cfg.ProjectID, cfg.GKEMCPClient, cfg.LoggingMCPClient)
+
 	agent := &Agent{
 		cfg:         cfg,
-		mastHarness: NewMastHarness(cfg.LookoutClient),
+		mastHarness: harness,
 	}
 
 	if cfg.ForceMock {

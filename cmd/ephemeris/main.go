@@ -38,9 +38,9 @@ func main() {
 	}
 
 	port := flag.Int("port", defaultPort, "HTTP and WebSocket listen port (env: PORT)")
-	mode := flag.String("mode", orchestrator.GetEnvOrDefault("EPHEMERIS_MODE", "mock"), "Operational mode: 'mock' or 'live'")
+	mode := flag.String("mode", orchestrator.GetEnvOrDefault("EPHEMERIS_MODE", "mock"), "Initial operational mode: 'mock' or 'live'")
 	webDir := flag.String("web-dir", "", "Serve web assets from directory instead of embedded bundle")
-	gcpProject := flag.String("gcp-project", orchestrator.GetEnvOrDefault("GOOGLE_CLOUD_PROJECT", ""), "GCP Project ID")
+	gcpProject := flag.String("gcp-project", orchestrator.GetEnvOrDefault("GOOGLE_CLOUD_PROJECT", "gke-demos-345619"), "GCP Project ID")
 	vertexLocation := flag.String("vertex-location", orchestrator.GetEnvOrDefault("VERTEX_LOCATION", "global"), "Vertex AI Location (default: global)")
 	model := flag.String("model", orchestrator.GetEnvOrDefault("GEMINI_MODEL", "gemini-3.8-flash"), "Gemini model identifier")
 	gkeMCPEndpoint := flag.String("gke-mcp-endpoint", orchestrator.GetEnvOrDefault("GKE_MCP_ENDPOINT", "https://container.googleapis.com/mcp"), "GKE MCP endpoint URL")
@@ -49,73 +49,66 @@ func main() {
 	forceMockLLM := flag.Bool("force-mock-llm", os.Getenv("EPHEMERIS_FORCE_MOCK_LLM") == "true", "Force deterministic mock UI compiler without calling Vertex AI")
 	flag.Parse()
 
-	log.Printf("Starting ephemeris daemon [mode=%s, port=%d, model=%s, location=%s]", *mode, *port, *model, *vertexLocation)
+	log.Printf("Starting ephemeris daemon [mode=%s, port=%d, project=%s, model=%s, location=%s]", *mode, *port, *gcpProject, *model, *vertexLocation)
 
 	ctx := context.Background()
 
-	// 1. Initialize providers
-	var gkeProvider gke.Provider
-	var telemProvider telemetry.Provider
-	var lookoutClient *mcp.LookoutClient
+	// 1. Initialize Mock Simulation Providers
+	mockGKE := gke.NewMockProvider()
+	mockTelem := telemetry.NewMockProvider()
 
+	// 2. Initialize Agentic MCP Clients (backed by github.com/go-steer/mast/pkg/mcp)
+	var lookoutClient *mcp.LookoutClient
 	if *lookoutMCPEndpoint != "" {
-		lc, err := mcp.NewClient(ctx, mcp.ClientConfig{
-			BaseURL: *lookoutMCPEndpoint,
-		})
-		if err != nil {
-			log.Printf("Warning: failed to initialize external k8s-lookout MCP client (%v); using built-in k8s-lookout engine", err)
-			lookoutClient = mcp.NewLookoutClient(nil)
-		} else {
-			log.Printf("Using external k8s-lookout MCP server at %s", *lookoutMCPEndpoint)
+		if lc, err := mcp.NewClient(ctx, mcp.ClientConfig{BaseURL: *lookoutMCPEndpoint}); err == nil {
 			lookoutClient = mcp.NewLookoutClient(lc)
 		}
-	} else {
+	}
+	if lookoutClient == nil {
 		lookoutClient = mcp.NewLookoutClient(nil)
 	}
 
-	if *mode == "live" {
-		if *gcpProject == "" {
-			log.Printf("Warning: -mode=live specified but -gcp-project is empty; falling back to mock providers")
-			gkeProvider = gke.NewMockProvider()
-			telemProvider = telemetry.NewMockProvider()
-		} else {
-			gkeClient, err := mcp.NewClient(ctx, mcp.ClientConfig{
-				BaseURL: *gkeMCPEndpoint,
-			})
-			if err != nil {
-				log.Printf("Warning: failed to initialize GKE MCP client (%v); falling back to mock GKE provider", err)
-				gkeProvider = gke.NewMockProvider()
-			} else {
-				log.Printf("Using live GKE MCP provider connecting to %s for project %s", *gkeMCPEndpoint, *gcpProject)
-				gkeProvider = gke.NewMCPProvider(gkeClient, *gcpProject)
-			}
+	var gkeMCPClient *mcp.Client
+	var logMCPClient *mcp.Client
+	var liveGKE *gke.LiveProvider
+	var liveTelem *telemetry.LiveProvider
 
-			logClient, err := mcp.NewClient(ctx, mcp.ClientConfig{
-				BaseURL: *loggingMCPEndpoint,
-			})
-			if err != nil {
-				log.Printf("Warning: failed to initialize Logging MCP client (%v); falling back to mock telemetry provider", err)
-				telemProvider = telemetry.NewMockProvider()
-			} else {
-				log.Printf("Using live Logging MCP provider connecting to %s for project %s", *loggingMCPEndpoint, *gcpProject)
-				telemProvider = telemetry.NewMCPProvider(logClient, *gcpProject)
-			}
+	if *gcpProject != "" {
+		if c, err := mcp.NewClient(ctx, mcp.ClientConfig{BaseURL: *gkeMCPEndpoint}); err == nil {
+			gkeMCPClient = c
+			log.Printf("Initialized GKE MCP toolset (github.com/go-steer/mast/pkg/mcp) at %s", *gkeMCPEndpoint)
+		} else {
+			log.Printf("Warning: GKE MCP client unavailable (%v)", err)
 		}
-	} else {
-		gkeProvider = gke.NewMockProvider()
-		telemProvider = telemetry.NewMockProvider()
+
+		if c, err := mcp.NewClient(ctx, mcp.ClientConfig{BaseURL: *loggingMCPEndpoint}); err == nil {
+			logMCPClient = c
+			log.Printf("Initialized Cloud Logging MCP toolset (github.com/go-steer/mast/pkg/mcp) at %s", *loggingMCPEndpoint)
+		} else {
+			log.Printf("Warning: Logging MCP client unavailable (%v)", err)
+		}
+
+		if lp, err := gke.NewLiveProvider(ctx, *gcpProject, gkeMCPClient); err == nil {
+			liveGKE = lp
+			liveTelem = telemetry.NewLiveProvider(*gcpProject, liveGKE, gkeMCPClient, logMCPClient)
+			log.Printf("Initialized Native Live GKE Provider (google.golang.org/api/container/v1 + k8s.io/client-go) for project %s", *gcpProject)
+		} else {
+			log.Printf("Warning: Live GKE provider initialization skipped (%v)", err)
+		}
 	}
 
-	// 2. Initialize Vertex AI Agent (uses live Vertex AI Gemini when ADC is available, falls back gracefully if offline)
+	// 3. Initialize Vertex AI Agent with mast/pkg/mcp toolsets
 	agent := orchestrator.NewAgent(ctx, orchestrator.AgentConfig{
-		Model:         *model,
-		Location:      *vertexLocation,
-		ProjectID:     *gcpProject,
-		ForceMock:     *forceMockLLM,
-		LookoutClient: lookoutClient,
+		Model:            *model,
+		Location:         *vertexLocation,
+		ProjectID:        *gcpProject,
+		ForceMock:        *forceMockLLM,
+		LookoutClient:    lookoutClient,
+		GKEMCPClient:     gkeMCPClient,
+		LoggingMCPClient: logMCPClient,
 	})
 
-	// 3. Configure Server
+	// 4. Configure Server (supports dynamic HUD switching between 'mock' and 'live')
 	spaFS, err := webui.FS()
 	if err != nil {
 		log.Printf("Warning: failed to load embedded FS (%v)", err)
@@ -127,9 +120,12 @@ func main() {
 		SPAFileSystem: spaFS,
 	}
 
-	server := orchestrator.NewServer(serverCfg, gkeProvider, telemProvider, agent)
+	server := orchestrator.NewServer(serverCfg, mockGKE, mockTelem, agent)
+	if liveGKE != nil && liveTelem != nil {
+		server.ConfigureLiveProviders(liveGKE, liveTelem, *gcpProject, *mode)
+	}
 
-	// 4. Start Server
+	// 5. Start Server
 	if err := server.Start(); err != nil {
 		log.Fatalf("Server stopped: %v", err)
 	}

@@ -53,6 +53,12 @@ type Server struct {
 	cfg       ServerConfig
 	gke       gke.Provider
 	telemetry telemetry.Provider
+	mockGKE   gke.Provider
+	mockTelem telemetry.Provider
+	liveGKE   gke.Provider
+	liveTelem telemetry.Provider
+	mode      string
+	projectID string
 	agent     *Agent
 
 	mu      sync.Mutex
@@ -66,13 +72,31 @@ type clientState struct {
 }
 
 // NewServer initializes the orchestrator hub.
-func NewServer(cfg ServerConfig, gke gke.Provider, telem telemetry.Provider, agent *Agent) *Server {
+func NewServer(cfg ServerConfig, gkeProv gke.Provider, telemProv telemetry.Provider, agent *Agent) *Server {
 	return &Server{
 		cfg:       cfg,
-		gke:       gke,
-		telemetry: telem,
+		gke:       gkeProv,
+		telemetry: telemProv,
+		mockGKE:   gkeProv,
+		mockTelem: telemProv,
+		mode:      "mock",
 		agent:     agent,
 		clients:   make(map[*websocket.Conn]*clientState),
+	}
+}
+
+// ConfigureLiveProviders attaches native Live GKE & Telemetry providers so the user can switch
+// between 'live' (gke-demos-345619) and 'mock' chaos simulation from the HUD without restarting.
+func (s *Server) ConfigureLiveProviders(liveGKE gke.Provider, liveTelem telemetry.Provider, projectID string, initialMode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.liveGKE = liveGKE
+	s.liveTelem = liveTelem
+	s.projectID = projectID
+	if initialMode == "live" && liveGKE != nil && liveTelem != nil {
+		s.mode = "live"
+		s.gke = liveGKE
+		s.telemetry = liveTelem
 	}
 }
 
@@ -183,6 +207,56 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 	switch msg.Type {
 	case api.MsgTypeInit:
 		s.sendTopology(ctx, conn, state)
+
+	case api.MsgTypeSetMode:
+		targetMode := strings.ToLower(strings.TrimSpace(msg.Mode))
+		if targetMode != "live" && targetMode != "mock" {
+			targetMode = "mock"
+		}
+		s.mu.Lock()
+		if targetMode == "live" && s.liveGKE != nil && s.liveTelem != nil {
+			s.mode = "live"
+			s.gke = s.liveGKE
+			s.telemetry = s.liveTelem
+		} else {
+			targetMode = "mock"
+			s.mode = "mock"
+			s.gke = s.mockGKE
+			s.telemetry = s.mockTelem
+		}
+		proj := s.projectID
+		s.mu.Unlock()
+
+		if targetMode == "live" {
+			_ = s.writeJSON(conn, state, api.ServerMessage{
+				Type:    api.MsgTypeStatus,
+				Message: fmt.Sprintf("🌐 Switching to Live GKE (%s) — querying clusters via Google Cloud GKE SDK (container/v1) + k8s.io/client-go...", proj),
+			})
+		} else {
+			_ = s.writeJSON(conn, state, api.ServerMessage{
+				Type:    api.MsgTypeStatus,
+				Message: "🧪 Switched to Mock Simulation Engine",
+			})
+		}
+
+		topo, err := s.gke.GetTopology(ctx)
+		if err != nil {
+			s.sendError(conn, state, fmt.Sprintf("failed to fetch %s topology: %v", targetMode, err))
+			return
+		}
+		if topo != nil {
+			topo.Mode = targetMode
+			if targetMode == "live" {
+				topo.ProjectID = proj
+			}
+		}
+		s.broadcastTopology(topo)
+		if targetMode == "live" && topo != nil {
+			_ = s.writeJSON(conn, state, api.ServerMessage{
+				Type:    api.MsgTypeStatus,
+				Message: fmt.Sprintf("✓ Live GKE Connected: %d running clusters in %s rendered on 3D canvas", len(topo.Clusters), proj),
+			})
+		}
 
 	case api.MsgTypeSelectNode:
 		state.activeResource = msg.ResourceURI
@@ -432,10 +506,22 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 }
 
 func (s *Server) sendTopology(ctx context.Context, conn *websocket.Conn, state *clientState) {
-	topo, err := s.gke.GetTopology(ctx)
+	s.mu.Lock()
+	gkeProv := s.gke
+	mode := s.mode
+	proj := s.projectID
+	s.mu.Unlock()
+
+	topo, err := gkeProv.GetTopology(ctx)
 	if err != nil {
 		s.sendError(conn, state, fmt.Sprintf("failed to fetch topology: %v", err))
 		return
+	}
+	if topo != nil && topo.Mode == "" {
+		topo.Mode = mode
+		if mode == "live" {
+			topo.ProjectID = proj
+		}
 	}
 
 	_ = s.writeJSON(conn, state, api.ServerMessage{

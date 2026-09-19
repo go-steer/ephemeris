@@ -151,6 +151,19 @@ export function initializeApp() {
     hud.setStatusMessage(`3D Layer Filter: ${labelMap[mode] || mode}`, false);
   };
 
+  hud.onDataSourceModeChange = (mode) => {
+    hud.setSelectedPod(null);
+    topologyMesh.clearSelectedPod();
+    topologyMesh.clearBlastRadius();
+    controls.resetView();
+    const msg =
+      mode === 'live'
+        ? '🌐 Connecting to live GKE clusters (gke-demos-345619) via Google Cloud GKE SDK + client-go...'
+        : '🧪 Switching to Mock Chaos Simulation Engine...';
+    hud.setStatusMessage(msg, true);
+    ws.sendSetMode(mode);
+  };
+
   hud.onLabelModeChange = (mode) => {
     topologyMesh.setLabelMode(mode);
     const modeDesc = {
@@ -797,9 +810,17 @@ export function initializeApp() {
 
   ws.onTopology = (topologyData) => {
     const isFirstLoad = !currentTopologyData;
+    const modeChanged =
+      currentTopologyData &&
+      topologyData &&
+      (currentTopologyData.mode || 'mock') !== (topologyData.mode || 'mock');
     currentTopologyData = topologyData;
     topologyMesh.build(topologyData);
     hud.updatePerformanceStats(topologyMesh.getPerformanceStats());
+
+    if (topologyData) {
+      hud.setDataSourceMode(topologyData.mode || 'mock', topologyData.project_id || '');
+    }
 
     if (topologyData && topologyData.scenario_id) {
       hud.setScenario(topologyData.scenario_id);
@@ -809,9 +830,12 @@ export function initializeApp() {
       const clusters = topologyData.clusters;
       const select = document.getElementById('hud-cluster-select');
       const activeClusterName =
-        !isFirstLoad && select && select.value ? select.value : '__overview__';
+        !isFirstLoad && !modeChanged && select && select.value ? select.value : '__overview__';
       hud.setClusters(clusters, activeClusterName);
       hud.onClusterSelect(activeClusterName, true);
+      if (modeChanged) {
+        controls.resetView();
+      }
 
       if (isFirstLoad) {
         // Auto-focus the failing pod after initial load if available

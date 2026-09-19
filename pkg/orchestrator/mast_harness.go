@@ -61,12 +61,16 @@ type BudgetLimits struct {
 }
 
 // MastHarness coordinates multi-specialist execution modeled after go-steer/mast
-// (intent-router -> lookout-diagnostics -> arrowjs-compiler).
+// (intent-router -> lookout-diagnostics -> arrowjs-compiler), using github.com/go-steer/mast/pkg/mcp
+// toolsets when triaging live GKE clusters.
 type MastHarness struct {
 	mu            sync.Mutex
 	bundle        WorkloadBundle
 	specs         map[string]SpecialistSpec
 	lookoutClient *mcp.LookoutClient
+	gkeMCP        *mcp.Client
+	loggingMCP    *mcp.Client
+	projectID     string
 	budget        BudgetLimits
 	transcript    []TranscriptEntry
 }
@@ -85,7 +89,7 @@ func NewMastHarness(lookoutClient *mcp.LookoutClient) *MastHarness {
 		"lookout-diagnostics": {
 			Name:        "lookout-diagnostics",
 			Mode:        ModeTask,
-			Instruction: "Execute go-steer/k8s-lookout MCP read-only diagnostic tools (lookout_triage, lookout_events, lookout_top) and sanitize output.",
+			Instruction: "Execute github.com/go-steer/mast/pkg/mcp (GKE & Cloud Logging MCP) and go-steer/k8s-lookout read-only diagnostic tools and sanitize output.",
 		},
 		"arrowjs-compiler": {
 			Name:        "arrowjs-compiler",
@@ -106,7 +110,16 @@ func NewMastHarness(lookoutClient *mcp.LookoutClient) *MastHarness {
 	}
 }
 
-// RunLookoutSpecialist invokes the lookout-diagnostics specialist to execute k8s-lookout MCP checks.
+// ConfigureGoogleMCP attaches github.com/go-steer/mast/pkg/mcp GKE and Cloud Logging clients to the harness.
+func (h *MastHarness) ConfigureGoogleMCP(projectID string, gkeMCP, loggingMCP *mcp.Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.projectID = projectID
+	h.gkeMCP = gkeMCP
+	h.loggingMCP = loggingMCP
+}
+
+// RunLookoutSpecialist invokes the lookout-diagnostics specialist to execute k8s-lookout and live GKE MCP checks.
 func (h *MastHarness) RunLookoutSpecialist(ctx context.Context, intent LLMIntentResult, topology *api.TopologyData, telemetry *api.TelemetryData, onStatus func(string)) ([]api.LookoutFinding, string) {
 	start := time.Now()
 	toolName := "lookout_triage"
@@ -130,6 +143,43 @@ func (h *MastHarness) RunLookoutSpecialist(ctx context.Context, intent LLMIntent
 	findings, envelope, err := h.lookoutClient.RunLookoutCheck(ctx, toolName, topology, telemetry, targetFilter)
 	if err != nil {
 		envelope = "scanned=12 findings=0 elapsed=5ms"
+	}
+
+	// When operating against Live GKE clusters, invoke github.com/go-steer/mast/pkg/mcp (list_k8s_events)
+	// on the target cluster to enrich agent findings with live control-plane events.
+	if topology != nil && topology.Mode == "live" && h.gkeMCP != nil && len(topology.Clusters) > 0 {
+		targetCluster := topology.Clusters[0]
+		for _, c := range topology.Clusters {
+			if c.Name == intent.TargetCluster {
+				targetCluster = c
+				break
+			}
+		}
+		if onStatus != nil {
+			onStatus(fmt.Sprintf("🌐 [mast/pkg/mcp:gke] Calling list_k8s_events on live cluster %s (%s)...", targetCluster.Name, targetCluster.Location))
+		}
+		parent := fmt.Sprintf("projects/%s/locations/%s/clusters/%s", targetCluster.ProjectID, targetCluster.Location, targetCluster.Name)
+		evCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		rawEv, evErr := h.gkeMCP.CallTool(evCtx, "list_k8s_events", map[string]interface{}{
+			"parent":        parent,
+			"allNamespaces": true,
+			"limit":         10,
+		})
+		cancel()
+		if evErr == nil && len(rawEv) > 0 {
+			summaryText := mcp.SanitizeFinding(string(rawEv))
+			if len(summaryText) > 220 {
+				summaryText = summaryText[:220] + "..."
+			}
+			findings = append(findings, api.LookoutFinding{
+				Kind:        "gke_mcp_events",
+				Severity:    "info",
+				Fingerprint: mcp.GenerateFingerprint("cluster", targetCluster.Location, targetCluster.Name),
+				Resource:    "cluster/" + targetCluster.Name,
+				Namespace:   "all",
+				Summary:     fmt.Sprintf("Live GKE MCP (container.googleapis.com/mcp) verified %s in %s: %s", targetCluster.Name, targetCluster.Location, summaryText),
+			})
+		}
 	}
 
 	elapsed := time.Since(start).Milliseconds()
