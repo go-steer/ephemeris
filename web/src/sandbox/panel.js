@@ -70,6 +70,33 @@ export class IncidentPanel {
     }
   }
 
+  get onClosePanel() {
+    return this._onClosePanel;
+  }
+
+  set onClosePanel(fn) {
+    this._onClosePanel = fn;
+    for (const child of this._childWindows) {
+      child.onClosePanel = fn;
+    }
+  }
+
+  dispatchLogStream(logStreamData) {
+    if (!logStreamData) return;
+    if (this.isVisible && this.runtime && this.runtime.container) {
+      this.runtime.container.dispatchEvent(
+        new CustomEvent('ephemeris-log-stream', { detail: logStreamData })
+      );
+    }
+    for (const child of this._childWindows) {
+      if (child.isVisible && child.runtime && child.runtime.container) {
+        child.runtime.container.dispatchEvent(
+          new CustomEvent('ephemeris-log-stream', { detail: logStreamData })
+        );
+      }
+    }
+  }
+
   findWindowByRequestId(requestId) {
     if (!requestId) {
       return this._activeTargetWindow || this;
@@ -119,6 +146,7 @@ export class IncidentPanel {
     const child = new IncidentPanel(this.container, true, offsetIdx);
     child.onObjectPromptSubmit = this._onObjectPromptSubmit;
     child.onCancelGeneration = this._onCancelGeneration;
+    child.onClosePanel = this._onClosePanel;
     this._childWindows.push(child);
     this._activeTargetWindow = child;
     return child;
@@ -810,6 +838,9 @@ export class IncidentPanel {
   hide() {
     if (this.isGenerating && this._onCancelGeneration) {
       this._onCancelGeneration(this.activeRequestId || '');
+    }
+    if (this._onClosePanel) {
+      this._onClosePanel();
     }
     this.isGenerating = false;
     this.activeRequestId = null;

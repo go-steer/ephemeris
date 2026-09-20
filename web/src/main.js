@@ -636,6 +636,14 @@ export function initializeApp() {
     hud.setStatusMessage('⏹ Agent synthesis cancelled by user.', false);
   };
 
+  panel.onClosePanel = () => {
+    ws.sendStopLogStream();
+  };
+
+  ws.onLogStream = (logStreamData) => {
+    panel.dispatchLogStream(logStreamData);
+  };
+
   hud.onPromptSubmit = (promptText, pod, meta) => {
     const pLower = (promptText || '').toLowerCase();
     const targetCluster = extractTargetCluster(pLower);

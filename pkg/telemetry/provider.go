@@ -26,3 +26,8 @@ type Provider interface {
 	// QueryLogs retrieves log lines and container metrics for a resource.
 	QueryLogs(ctx context.Context, resourceURI string, limit int) (*api.TelemetryData, error)
 }
+
+// Streamer is implemented by telemetry providers that support live real-time pod log tailing (Follow: true).
+type Streamer interface {
+	StreamLogs(ctx context.Context, resourceURI string, out chan<- api.LogEntry) error
+}

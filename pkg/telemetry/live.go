@@ -15,9 +15,11 @@
 package telemetry
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -95,15 +97,9 @@ func (p *LiveProvider) QueryLogs(ctx context.Context, resourceURI string, limit 
 					if ev.Type == "Warning" {
 						sev = "WARNING"
 					}
-					ts := ev.LastTimestamp.Time
-					if ts.IsZero() {
-						ts = ev.EventTime.Time
-					}
-					if ts.IsZero() {
-						ts = time.Now().UTC()
-					}
+					ts := resolveEventTimestamp(&ev)
 					entries = append(entries, api.LogEntry{
-						Timestamp: ts.UTC().Format(time.RFC3339),
+						Timestamp: FormatLogTimestamp(ts.UTC().Format(time.RFC3339Nano)),
 						Severity:  sev,
 						Message:   fmt.Sprintf("[%s/%s] %s: %s", ev.InvolvedObject.Kind, ev.InvolvedObject.Name, ev.Reason, ev.Message),
 						Source:    "k8s-event/" + clusterName,
@@ -179,7 +175,7 @@ func (p *LiveProvider) QueryLogs(ctx context.Context, resourceURI string, limit 
 						sev = "INFO"
 					}
 					entries = append(entries, api.LogEntry{
-						Timestamp: e.Timestamp,
+						Timestamp: FormatLogTimestamp(e.Timestamp),
 						Severity:  sev,
 						Message:   msg,
 						Source:    "cloud-logging/" + p.projectID,
@@ -192,12 +188,14 @@ func (p *LiveProvider) QueryLogs(ctx context.Context, resourceURI string, limit 
 	// 4. Always provide a live telemetry status header entry if workload is quiet
 	if len(entries) == 0 {
 		entries = append(entries, api.LogEntry{
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Timestamp: FormatLogTimestamp(time.Now().UTC().Format(time.RFC3339Nano)),
 			Severity:  "INFO",
 			Message:   fmt.Sprintf("Connected to live GKE project %s (cluster=%s, namespace=%s, target=%s) — workload is Running with 0 error events", p.projectID, chooseNonEmpty(clusterName, "all"), chooseNonEmpty(namespace, "default"), chooseNonEmpty(podName, resourceURI)),
 			Source:    "gke-live-telemetry",
 		})
 	}
+
+	sortLogEntriesByTimestamp(entries)
 
 	return &api.TelemetryData{
 		ResourceURI: resourceURI,
@@ -205,6 +203,137 @@ func (p *LiveProvider) QueryLogs(ctx context.Context, resourceURI string, limit 
 		Logs:        entries,
 		Metrics:     metrics,
 	}, nil
+}
+
+// StreamLogs establishes a live Follow: true log stream from the target pod via k8s.io/client-go
+// and emits each new LogEntry with millisecond-accurate timestamps to out until ctx is cancelled.
+func (p *LiveProvider) StreamLogs(ctx context.Context, resourceURI string, out chan<- api.LogEntry) error {
+	clusterName, namespace, podName := p.resolveTargetFromTopology(ctx, resourceURI)
+	if p.gkeLive == nil || clusterName == "" || podName == "" || namespace == "" {
+		return nil
+	}
+
+	cs, _ := p.gkeLive.ClientsetForCluster(clusterName)
+	if cs == nil {
+		return nil
+	}
+
+	since := metav1.NewTime(time.Now().UTC().Add(-1 * time.Second))
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		stream, err := cs.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+			Follow:     true,
+			Timestamps: true,
+			SinceTime:  &since,
+		}).Stream(ctx)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(3 * time.Second):
+				continue
+			}
+		}
+
+		scanner := bufio.NewScanner(stream)
+		for scanner.Scan() {
+			if ctx.Err() != nil {
+				_ = stream.Close()
+				return ctx.Err()
+			}
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			parsed := parseRawLogLines(line, podName)
+			for _, entry := range parsed {
+				if t, ok := parseTimestampTime(entry.Timestamp); ok {
+					since = metav1.NewTime(t.Add(1 * time.Millisecond))
+				} else {
+					since = metav1.NewTime(time.Now().UTC())
+				}
+				select {
+				case <-ctx.Done():
+					_ = stream.Close()
+					return ctx.Err()
+				case out <- entry:
+				}
+			}
+		}
+		_ = stream.Close()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func resolveEventTimestamp(ev *corev1.Event) time.Time {
+	if ev == nil {
+		return time.Now().UTC()
+	}
+	if !ev.LastTimestamp.Time.IsZero() {
+		return ev.LastTimestamp.Time
+	}
+	if !ev.EventTime.Time.IsZero() {
+		return ev.EventTime.Time
+	}
+	if ev.Series != nil && !ev.Series.LastObservedTime.Time.IsZero() {
+		return ev.Series.LastObservedTime.Time
+	}
+	if !ev.FirstTimestamp.Time.IsZero() {
+		return ev.FirstTimestamp.Time
+	}
+	if !ev.CreationTimestamp.Time.IsZero() {
+		return ev.CreationTimestamp.Time
+	}
+	return time.Now().UTC()
+}
+
+// FormatLogTimestamp normalizes RFC3339 / RFC3339Nano timestamps into a human-readable
+// millisecond-accurate UTC string ("2006-01-02 15:04:05.000 UTC") without discarding sub-second precision.
+func FormatLogTimestamp(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Now().UTC().Format("2006-01-02 15:04:05.000 UTC")
+	}
+	if t, ok := parseTimestampTime(raw); ok {
+		return t.UTC().Format("2006-01-02 15:04:05.000 UTC")
+	}
+	return raw
+}
+
+func parseTimestampTime(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.000 UTC",
+		"2006-01-02 15:04:05.000",
+		"2006-01-02T15:04:05.000Z",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func sortLogEntriesByTimestamp(entries []api.LogEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		ti, oki := parseTimestampTime(entries[i].Timestamp)
+		tj, okj := parseTimestampTime(entries[j].Timestamp)
+		if oki && okj {
+			return ti.Before(tj)
+		}
+		return entries[i].Timestamp < entries[j].Timestamp
+	})
 }
 
 func (p *LiveProvider) resolveTargetFromTopology(ctx context.Context, resourceURI string) (clusterName, namespace, podName string) {
@@ -274,10 +403,10 @@ func parseRawLogLines(raw string, source string) []api.LogEntry {
 		if line == "" {
 			continue
 		}
-		ts := time.Now().UTC().Format(time.RFC3339)
+		ts := FormatLogTimestamp(time.Now().UTC().Format(time.RFC3339Nano))
 		msg := line
 		if parts := strings.SplitN(line, " ", 2); len(parts) == 2 && strings.Contains(parts[0], "T") {
-			ts = parts[0]
+			ts = FormatLogTimestamp(parts[0])
 			msg = parts[1]
 		}
 		sev := "INFO"

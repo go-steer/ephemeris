@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-steer/ephemeris/pkg/api"
 	"github.com/go-steer/ephemeris/pkg/mcp"
@@ -238,7 +239,25 @@ type uiLogLine struct {
 	Msg   string `json:"msg"`
 }
 
-// synthesizeLogsConsoleUI generates a reactive ArrowJS Live Container Log Console bound to real telemetry logs.
+func formatUILogTimestamp(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Now().UTC().Format("2006-01-02 15:04:05.000 UTC")
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.000Z",
+		"2006-01-02 15:04:05.000 UTC",
+	} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC().Format("2006-01-02 15:04:05.000 UTC")
+		}
+	}
+	return raw
+}
+
+// synthesizeLogsConsoleUI generates a reactive ArrowJS Live Container Log Console bound to real telemetry logs and live Follow: true WebSocket streaming.
 func synthesizeLogsConsoleUI(telemetry *api.TelemetryData) string {
 	podName := "payment-service"
 	var lines []uiLogLine
@@ -248,10 +267,7 @@ func synthesizeLogsConsoleUI(telemetry *api.TelemetryData) string {
 			podName = telemetry.PodID
 		}
 		for _, entry := range telemetry.Logs {
-			ts := entry.Timestamp
-			if len(ts) >= 19 {
-				ts = ts[11:19] + ".000"
-			}
+			ts := formatUILogTimestamp(entry.Timestamp)
 			lvl := entry.Severity
 			if lvl == "WARNING" {
 				lvl = "WARN"
@@ -265,9 +281,10 @@ func synthesizeLogsConsoleUI(telemetry *api.TelemetryData) string {
 	}
 
 	if len(lines) == 0 {
+		nowStr := time.Now().UTC().Format("2006-01-02 15:04:05.000 UTC")
 		lines = []uiLogLine{
-			{TS: "15:04:01.112", Level: "INFO", Msg: "Container runtime initialized; listening on service port"},
-			{TS: "15:04:02.405", Level: "INFO", Msg: "Health check probe /healthz -> 200 OK"},
+			{TS: nowStr, Level: "INFO", Msg: "Container runtime initialized; listening on service port"},
+			{TS: nowStr, Level: "INFO", Msg: "Health check probe /healthz -> 200 OK"},
 		}
 	}
 
@@ -278,9 +295,22 @@ func synthesizeLogsConsoleUI(telemetry *api.TelemetryData) string {
   filterLevel: 'ALL',
   searchQuery: '',
   isPaused: false,
+  streamedCount: 0,
+  bufferedCount: 0,
   copiedIndex: -1,
   logs: %s
 });
+
+const bufferedEntries = [];
+
+function scrollViewportToBottom() {
+  try {
+    const vp = container.querySelector('#ephemeris-log-viewport');
+    if (vp) {
+      vp.scrollTop = vp.scrollHeight;
+    }
+  } catch (_) {}
+}
 
 function setLevel(lvl) {
   state.filterLevel = lvl;
@@ -288,6 +318,13 @@ function setLevel(lvl) {
 
 function togglePause() {
   state.isPaused = !state.isPaused;
+  if (!state.isPaused && bufferedEntries.length > 0) {
+    const flushed = bufferedEntries.splice(0, bufferedEntries.length);
+    const combined = state.logs.concat(flushed);
+    state.logs = combined.slice(-250);
+    state.bufferedCount = 0;
+    setTimeout(scrollViewportToBottom, 20);
+  }
 }
 
 function focusWorkload() {
@@ -303,16 +340,56 @@ function copyLog(idx, msg) {
   setTimeout(() => { state.copiedIndex = -1; }, 1500);
 }
 
+function levelColor(lvl) {
+  if (lvl === 'ERROR' || lvl === 'FATAL') return '#f87171';
+  if (lvl === 'WARN' || lvl === 'WARNING') return '#fbbf24';
+  return '#38bdf8';
+}
+
+container.addEventListener('ephemeris-log-stream', (e) => {
+  const payload = (e && e.detail) || {};
+  const incoming = payload.entries || [];
+  if (!incoming.length) return;
+
+  const formatted = incoming.map((item) => {
+    let lvl = (item.severity || 'INFO').toUpperCase();
+    if (lvl === 'WARNING') lvl = 'WARN';
+    return {
+      ts: item.timestamp || '',
+      level: lvl,
+      msg: item.message || ''
+    };
+  });
+
+  state.streamedCount += formatted.length;
+  if (state.isPaused) {
+    bufferedEntries.push(...formatted);
+    state.bufferedCount = bufferedEntries.length;
+    return;
+  }
+
+  const next = state.logs.concat(formatted);
+  state.logs = next.slice(-250);
+  setTimeout(scrollViewportToBottom, 20);
+});
+
+setTimeout(scrollViewportToBottom, 40);
+
 const template = html`+"`"+`
   <div style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;">
-    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.3);">
-      <div style="display: flex; align-items: center; gap: 10px;">
+    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(15, 23, 42, 0.85); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.3); flex-wrap: wrap; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
         <span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">Live Log Console</span>
         <span style="font-size: 13px; font-weight: 600; color: #e2e8f0; font-family: 'JetBrains Mono', monospace;">${() => state.podName}</span>
+        <span style="${() => 'padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; font-family: JetBrains Mono, monospace; border: 1px solid ' + (state.isPaused ? 'rgba(251, 191, 36, 0.45); background: rgba(251, 191, 36, 0.15); color: #fbbf24;' : 'rgba(52, 211, 153, 0.45); background: rgba(16, 185, 129, 0.16); color: #34d399;')}">
+          ${() => state.isPaused
+            ? ('⏸ STREAM PAUSED' + (state.bufferedCount > 0 ? ' (+' + state.bufferedCount + ' buffered)' : ''))
+            : ('🟢 LIVE TAILING (Follow: true)' + (state.streamedCount > 0 ? ' • +' + state.streamedCount + ' new' : ''))}
+        </span>
       </div>
       <div style="display: flex; gap: 6px;">
         <button @click="${togglePause}" style="background: rgba(30, 41, 59, 0.9); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer; font-weight: 600;">
-          ${() => state.isPaused ? '▶ Resume Stream' : '⏸ Pause Tail'}
+          ${() => state.isPaused ? ('▶ Resume Stream' + (state.bufferedCount > 0 ? ' (' + state.bufferedCount + ')' : '')) : '⏸ Pause Tail'}
         </button>
         <button @click="${focusWorkload}" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer; font-weight: 600;">
           🎯 Focus 3D Pod
@@ -320,7 +397,7 @@ const template = html`+"`"+`
       </div>
     </div>
 
-    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+    <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap;">
       <div style="display: flex; gap: 4px; background: rgba(15, 23, 42, 0.6); padding: 4px; border-radius: 6px; border: 1px solid rgba(148, 163, 184, 0.18);">
         <button @click="${() => setLevel('ALL')}" style="background: rgba(56, 189, 248, 0.18); color: #f8fafc; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">ALL</button>
         <button @click="${() => setLevel('FATAL')}" style="background: rgba(239, 68, 68, 0.18); color: #fca5a5; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">FATAL</button>
@@ -328,17 +405,17 @@ const template = html`+"`"+`
         <button @click="${() => setLevel('WARN')}" style="background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">WARN</button>
         <button @click="${() => setLevel('INFO')}" style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: none; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;">INFO</button>
       </div>
-      <span style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">Filter: ${() => state.filterLevel}</span>
+      <span style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">Filter: ${() => state.filterLevel} • ${() => state.logs.length} entries (UTC millisecond precision)</span>
     </div>
 
-    <div style="background: #050811; border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 8px; padding: 10px; max-height: 260px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
+    <div id="ephemeris-log-viewport" style="background: #050811; border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 8px; padding: 10px; max-height: 280px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
       ${() => state.logs
         .filter(l => state.filterLevel === 'ALL' || l.level === state.filterLevel)
         .map((l, idx) => html`+"`"+`
-          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 5px 8px; border-radius: 4px; background: rgba(15, 23, 42, 0.75); border-left: 3px solid #38bdf8;">
+          <div style="${() => 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 5px 8px; border-radius: 4px; background: rgba(15, 23, 42, 0.75); border-left: 3px solid ' + levelColor(l.level) + ';'}">
             <div style="display: flex; gap: 8px; word-break: break-all;">
-              <span style="color: #64748b; flex-shrink: 0;">${l.ts}</span>
-              <span style="font-weight: 700; flex-shrink: 0; color: #e2e8f0;">[${l.level}]</span>
+              <span style="color: #94a3b8; flex-shrink: 0; font-variant-numeric: tabular-nums;">${l.ts}</span>
+              <span style="${() => 'font-weight: 700; flex-shrink: 0; color: ' + levelColor(l.level) + ';'}">[${l.level}]</span>
               <span style="color: #f1f5f9;">${l.msg}</span>
             </div>
             <button @click="${() => copyLog(idx, l.msg)}" style="background: transparent; color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer; flex-shrink: 0;">

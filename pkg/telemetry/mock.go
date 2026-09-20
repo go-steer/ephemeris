@@ -354,3 +354,31 @@ func (m *MockProvider) healthyServiceLogs(resourceURI string, limit int) *api.Te
 		Logs: rawLogs,
 	}
 }
+
+// StreamLogs emits realistic continuous log tail lines every 2 seconds for mock workloads.
+func (m *MockProvider) StreamLogs(ctx context.Context, resourceURI string, out chan<- api.LogEntry) error {
+	podName := extractPodName(resourceURI)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	seq := 1
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case now := <-ticker.C:
+			entry := api.LogEntry{
+				Timestamp: FormatLogTimestamp(now.UTC().Format(time.RFC3339Nano)),
+				Severity:  "INFO",
+				Message:   fmt.Sprintf("[LIVE TAIL #%d] GET /healthz & gRPC stream heartbeat -> 200 OK (pod=%s, latency=%dms)", seq, podName, 2+(seq%5)),
+				Source:    podName,
+			}
+			seq++
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case out <- entry:
+			}
+		}
+	}
+}

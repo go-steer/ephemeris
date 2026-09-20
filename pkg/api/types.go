@@ -36,6 +36,8 @@ const (
 	MsgTypeSetMode ClientMessageType = "set_mode"
 	// MsgTypeCancel interrupts and cancels an in-flight agent prompt turn.
 	MsgTypeCancel ClientMessageType = "cancel"
+	// MsgTypeStopLogStream stops an active live pod log stream for the client.
+	MsgTypeStopLogStream ClientMessageType = "stop_log_stream"
 )
 
 // ScaleTestConfig defines parameters for synthetic large-scale topology stress testing.
@@ -71,11 +73,20 @@ const (
 	MsgTypeStatus ServerMessageType = "status"
 	// MsgTypeTelemetry delivers telemetry logs and metrics for a resource.
 	MsgTypeTelemetry ServerMessageType = "telemetry"
+	// MsgTypeLogStream delivers real-time streamed log entries (Follow: true).
+	MsgTypeLogStream ServerMessageType = "log_stream"
 	// MsgTypeUIComponent delivers compiled ArrowJS template code and bound data.
 	MsgTypeUIComponent ServerMessageType = "ui_component"
 	// MsgTypeError reports errors to the user.
 	MsgTypeError ServerMessageType = "error"
 )
+
+// LogStreamData carries incremental live-streamed log entries for an active pod console.
+type LogStreamData struct {
+	PodID       string     `json:"pod_id"`
+	ResourceURI string     `json:"resource_uri"`
+	Entries     []LogEntry `json:"entries"`
+}
 
 // ServerMessage is pushed from the orchestrator over WebSocket.
 type ServerMessage struct {
@@ -84,6 +95,7 @@ type ServerMessage struct {
 	Message   string            `json:"message,omitempty"`
 	Topology  *TopologyData     `json:"topology,omitempty"`
 	Telemetry *TelemetryData    `json:"telemetry,omitempty"`
+	LogStream *LogStreamData    `json:"log_stream,omitempty"`
 	UI        *UIComponentData  `json:"ui,omitempty"`
 }
 

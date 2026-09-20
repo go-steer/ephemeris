@@ -34,6 +34,7 @@ export class WebSocketClient {
     this.onTopology = null;
     this.onStatus = null;
     this.onTelemetry = null;
+    this.onLogStream = null;
     this.onUIComponent = null;
     this.onError = null;
     this.onConnectionChange = null;
@@ -129,6 +130,11 @@ export class WebSocketClient {
         case 'telemetry':
           if (this.onTelemetry) this.onTelemetry(msg.telemetry);
           break;
+        case 'log_stream':
+          if (this.onLogStream && msg.log_stream) {
+            this.onLogStream(msg.log_stream);
+          }
+          break;
         case 'ui_component':
           if (this.onUIComponent) {
             const uiData = msg.ui || msg;
@@ -203,6 +209,10 @@ export class WebSocketClient {
       payload.request_id = requestId;
     }
     return this._send(payload);
+  }
+
+  sendStopLogStream() {
+    return this._send({ type: 'stop_log_stream' });
   }
 
   sendRemediate(podId, action = 'rollback') {

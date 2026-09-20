@@ -167,3 +167,28 @@ func TestServer_CancelPrompt(t *testing.T) {
 		t.Errorf("expected RequestID req-cancel-test-1, got %s", resp.RequestID)
 	}
 }
+
+func TestSynthesizeLogsConsoleUI_AccurateTimestampsAndLiveStream(t *testing.T) {
+	formatted := telemetry.FormatLogTimestamp("2026-09-20T10:10:56.819274112Z")
+	if formatted != "2026-09-20 10:10:56.819 UTC" {
+		t.Fatalf("expected 2026-09-20 10:10:56.819 UTC, got %q", formatted)
+	}
+
+	code := synthesizeLogsConsoleUI(&api.TelemetryData{
+		PodID: "store-v1-7c6d49c748-4bsdp",
+		Logs: []api.LogEntry{
+			{
+				Timestamp: "2026-09-20T10:10:56.819274112Z",
+				Severity:  "INFO",
+				Message:   "GET / HTTP/1.1 200 OK",
+			},
+		},
+	})
+
+	if !strings.Contains(code, "2026-09-20 10:10:56.819 UTC") {
+		t.Errorf("expected synthesized LogsConsole UI to preserve millisecond timestamp 2026-09-20 10:10:56.819 UTC")
+	}
+	if !strings.Contains(code, "ephemeris-log-stream") {
+		t.Errorf("expected synthesized LogsConsole UI to wire ephemeris-log-stream listener")
+	}
+}

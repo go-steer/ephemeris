@@ -69,6 +69,7 @@ type clientState struct {
 	writeMu         sync.Mutex
 	promptMu        sync.Mutex
 	activeCancel    context.CancelFunc
+	logStreamCancel context.CancelFunc
 	activeRequestID string
 	activeResource  string
 	selectedNodeID  string
@@ -81,6 +82,19 @@ func (st *clientState) cancelActivePrompt() {
 		st.activeCancel()
 		st.activeCancel = nil
 		st.activeRequestID = ""
+	}
+	if st.logStreamCancel != nil {
+		st.logStreamCancel()
+		st.logStreamCancel = nil
+	}
+}
+
+func (st *clientState) cancelActiveLogStream() {
+	st.promptMu.Lock()
+	defer st.promptMu.Unlock()
+	if st.logStreamCancel != nil {
+		st.logStreamCancel()
+		st.logStreamCancel = nil
 	}
 }
 
@@ -431,16 +445,23 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 			Message:   "⏹ Agent synthesis cancelled by user",
 		})
 
+	case api.MsgTypeStopLogStream:
+		state.cancelActiveLogStream()
+
 	case api.MsgTypePrompt:
 		reqID := msg.RequestID
 		if reqID == "" {
 			reqID = fmt.Sprintf("req-%d", time.Now().UnixNano())
 		}
 
-		// Preempt any prior in-flight prompt turn on this client connection before starting the new turn.
+		// Preempt any prior in-flight prompt turn or active log stream on this client connection.
 		state.promptMu.Lock()
 		if state.activeCancel != nil {
 			state.activeCancel()
+		}
+		if state.logStreamCancel != nil {
+			state.logStreamCancel()
+			state.logStreamCancel = nil
 		}
 		promptCtx, cancel := context.WithCancel(ctx)
 		state.activeCancel = cancel
@@ -448,7 +469,7 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 		state.promptMu.Unlock()
 
 		msgCopy := *msg
-		go s.runPromptTurn(promptCtx, cancel, conn, state, msgCopy, reqID)
+		go s.runPromptTurn(ctx, promptCtx, cancel, conn, state, msgCopy, reqID)
 
 	default:
 		s.sendError(conn, state, fmt.Sprintf("unknown message type: %q", msg.Type))
@@ -456,6 +477,7 @@ func (s *Server) handleClientMessage(ctx context.Context, conn *websocket.Conn, 
 }
 
 func (s *Server) runPromptTurn(
+	connCtx context.Context,
 	ctx context.Context,
 	cancel context.CancelFunc,
 	conn *websocket.Conn,
@@ -565,8 +587,10 @@ func (s *Server) runPromptTurn(
 	case ArchetypeResourceLeaderboard:
 		resourceURI = "gke://fleet/leaderboard"
 	default:
-		if intent.TargetPod != "" && strings.HasPrefix(resourceURI, "gke://fleet/") {
-			resourceURI = "gke://production/" + intent.TargetPod
+		if intent.TargetPod != "" && !strings.Contains(resourceURI, intent.TargetPod) {
+			resourceURI = "gke://default/" + intent.TargetPod
+		} else if msg.SelectedNodeID != "" && strings.HasPrefix(resourceURI, "gke://fleet/") {
+			resourceURI = "gke://default/" + msg.SelectedNodeID
 		}
 	}
 
@@ -614,6 +638,70 @@ func (s *Server) runPromptTurn(
 			Telemetry:       telem,
 		},
 	})
+
+	// Step 5: If this is a Live Log Console, start continuous Follow: true log streaming tied to clientState
+	if intent.Archetype == ArchetypeLogsConsole {
+		podID := telem.PodID
+		if podID == "" {
+			podID = intent.TargetPod
+		}
+		s.startLogStream(connCtx, conn, state, resourceURI, podID)
+	}
+}
+
+func (s *Server) startLogStream(
+	connCtx context.Context,
+	conn *websocket.Conn,
+	state *clientState,
+	resourceURI string,
+	podID string,
+) {
+	s.mu.Lock()
+	telemProv := s.telemetry
+	s.mu.Unlock()
+
+	streamer, ok := telemProv.(telemetry.Streamer)
+	if !ok || streamer == nil {
+		return
+	}
+
+	state.promptMu.Lock()
+	if state.logStreamCancel != nil {
+		state.logStreamCancel()
+	}
+	streamCtx, cancel := context.WithCancel(connCtx)
+	state.logStreamCancel = cancel
+	state.promptMu.Unlock()
+
+	go func() {
+		defer cancel()
+		lineCh := make(chan api.LogEntry, 32)
+		go func() {
+			defer close(lineCh)
+			_ = streamer.StreamLogs(streamCtx, resourceURI, lineCh)
+		}()
+
+		for {
+			select {
+			case <-streamCtx.Done():
+				return
+			case entry, open := <-lineCh:
+				if !open {
+					return
+				}
+				if err := s.writeJSON(conn, state, api.ServerMessage{
+					Type: api.MsgTypeLogStream,
+					LogStream: &api.LogStreamData{
+						PodID:       podID,
+						ResourceURI: resourceURI,
+						Entries:     []api.LogEntry{entry},
+					},
+				}); err != nil {
+					return
+				}
+			}
+		}
+	}()
 }
 
 func (s *Server) sendTopology(ctx context.Context, conn *websocket.Conn, state *clientState) {
