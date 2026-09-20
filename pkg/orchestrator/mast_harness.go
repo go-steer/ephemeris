@@ -147,7 +147,7 @@ func (h *MastHarness) RunLookoutSpecialist(ctx context.Context, intent LLMIntent
 
 	// When operating against Live GKE clusters, invoke github.com/go-steer/mast/pkg/mcp (list_k8s_events)
 	// on the target cluster to enrich agent findings with live control-plane events.
-	if topology != nil && topology.Mode == "live" && h.gkeMCP != nil && len(topology.Clusters) > 0 {
+	if intent.Archetype != ArchetypeLogsConsole && topology != nil && topology.Mode == "live" && h.gkeMCP != nil && len(topology.Clusters) > 0 {
 		targetCluster := topology.Clusters[0]
 		for _, c := range topology.Clusters {
 			if c.Name == intent.TargetCluster {

@@ -564,7 +564,7 @@ export class IncidentPanel {
           detail: {
             prompt: promptText,
             podId: state.podName,
-            resourceUri: 'gke://' + state.namespace + '/' + state.podName
+            resourceUri: 'gke://' + (state.cluster ? state.cluster + '/' : '') + state.namespace + '/' + state.podName
           }
         }));
       };

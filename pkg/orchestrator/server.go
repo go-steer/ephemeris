@@ -565,7 +565,7 @@ func (s *Server) runPromptTurn(
 	case ArchetypeResourceLeaderboard:
 		resourceURI = "gke://fleet/leaderboard"
 	default:
-		if intent.TargetPod != "" && !strings.Contains(resourceURI, intent.TargetPod) {
+		if intent.TargetPod != "" && strings.HasPrefix(resourceURI, "gke://fleet/") {
 			resourceURI = "gke://production/" + intent.TargetPod
 		}
 	}

@@ -249,6 +249,17 @@ export function initializeApp() {
             return { pod: p, meta: { namespaceName: ns.name, clusterName: cluster.name } };
           }
         }
+        for (const r of ns.resources || []) {
+          const rName = (r.name || '').toLowerCase();
+          const cleanRName = rName.replace(/[-_]/g, ' ');
+          const rId = (r.id || '').toLowerCase();
+          if (
+            rName &&
+            (text.includes(rName) || cleanText.includes(cleanRName) || (rId && text.includes(rId)))
+          ) {
+            return { pod: r, meta: { namespaceName: ns.name, clusterName: cluster.name } };
+          }
+        }
       }
     }
 
@@ -501,8 +512,8 @@ export function initializeApp() {
 
     promptStartTime = performance.now();
     hud.setStatusMessage(`Synthesizing view for ${podId}: "${promptText}"...`, true);
-    panel.showStreamingProgress(`Synthesizing view for @${podId}...`, podId);
-    ws.sendPrompt(podId, resourceUri, promptText);
+    const reqId = panel.startGeneration(podId, `Synthesizing view for @${podId}...`);
+    ws.sendPrompt(podId, resourceUri, promptText, reqId);
   };
 
   document.addEventListener('ephemeris-prompt-query', onPromptQueryFromUI);
@@ -581,6 +592,14 @@ export function initializeApp() {
   };
 
   const isK8sResourceQuery = (pLower) => {
+    if (
+      pLower.includes('log') ||
+      pLower.includes('tail') ||
+      pLower.includes('triage') ||
+      pLower.includes('root-cause')
+    ) {
+      return false;
+    }
     return (
       pLower.includes('gateway') ||
       pLower.includes('httproute') ||

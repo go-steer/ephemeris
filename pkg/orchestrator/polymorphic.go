@@ -130,14 +130,20 @@ func classifyPromptArchetype(prompt string, telemetry *api.TelemetryData) (UIArc
 		return ArchetypeChaosScenario, "default"
 	}
 
+	// 1. Explicit Log Console requests ("show me the logs for XXX", "tail logs", "error logs")
+	// Checked before extractKindsFromPrompt so pod names containing "-deployment-" or "-service-" are not misrouted.
+	if strings.Contains(p, "log") || strings.Contains(p, "tail") || strings.Contains(p, "stdout") || strings.Contains(p, "stderr") {
+		return ArchetypeLogsConsole, ""
+	}
+
+	// 1a. Explicit single-object root-cause triage requests ("Run AI root-cause triage for nginx-deployment-...")
+	if strings.Contains(p, "root-cause") || strings.Contains(p, "triage for ") {
+		return ArchetypeDeepTriageCockpit, ""
+	}
+
 	// 0b. K8s Controllers, Gateways, HTTPRoutes, CRDs, or Custom Analytical queries -> Tier 2 Dynamic UI
 	if len(extractKindsFromPrompt(p)) > 0 || strings.Contains(p, "controllers") {
 		return ArchetypeDynamicCustom, extractClusterFromPrompt(p)
-	}
-
-	// 1. Explicit Log Console requests ("show me the logs for XXX", "tail logs", "error logs")
-	if strings.Contains(p, "log") || strings.Contains(p, "tail") || strings.Contains(p, "stdout") || strings.Contains(p, "stderr") {
-		return ArchetypeLogsConsole, ""
 	}
 
 	// 2. Resource / Capacity Leaderboard ("compare memory", "top cpu pods", "resource usage")

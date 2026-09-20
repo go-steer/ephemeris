@@ -121,6 +121,11 @@ func (a *Agent) ResolveIntent(ctx context.Context, userPrompt string, telemetry 
 		}
 	}
 
+	if fallbackArch == ArchetypeLogsConsole {
+		fallbackResult.Reasoning = "Direct live container log stream & Kubernetes event console for selected workload"
+		return fallbackResult
+	}
+
 	if a.genaiClient == nil || a.cfg.ForceMock {
 		return fallbackResult
 	}
@@ -133,9 +138,9 @@ func (a *Agent) ResolveIntent(ctx context.Context, userPrompt string, telemetry 
 Translate the user's natural-language prompt into a JSON object matching this exact schema:
 {
   "archetype": "logs_console" | "issues_matrix" | "namespace_inventory" | "resource_leaderboard" | "deep_triage" | "chaos_scenario" | "dynamic_custom",
-  "target_pod": string (one of: "payment-service", "cart-service", "checkout-service", "batch-ingestor", "frontend", "redis-cart", or "" if fleet/namespace-wide),
-  "target_namespace": string (one of: "default", "production", "staging", "spark-jobs", "checkout", "data-pipeline", "payments", "monitoring", or "all"),
-  "target_cluster": string (one of: "production-us-central1", "staging-us-east4", "analytics-europe-west1", or "" if all clusters),
+  "target_pod": string (exact pod or workload name mentioned by user, or "" if fleet/namespace-wide),
+  "target_namespace": string (exact namespace mentioned by user, or "all"),
+  "target_cluster": string (exact GKE cluster name mentioned by user, or "" if all clusters),
   "target_scenario": string (one of: "redis-oom", "traffic-spike", "healthy", "default", or "" unless archetype is chaos_scenario),
   "target_kinds": array of strings (exact Kubernetes Kind names requested by the user, e.g. ["StatefulSet"], ["Deployment"], ["Gateway", "HTTPRoute"], ["Service"], ["SparkApplication"], ["RayCluster"], ["CRD"], or [] if all resources),
   "target_status": string ("Healthy" | "Degraded" | "Pending" | "" if unspecified),
