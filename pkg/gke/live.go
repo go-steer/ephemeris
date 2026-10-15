@@ -52,6 +52,8 @@ type LiveProvider struct {
 	fallback    *MockProvider
 
 	mu          sync.RWMutex
+	fetchMu     sync.Mutex
+	refreshing  bool
 	cachedTopo  *api.TopologyData
 	cachedAt    time.Time
 	cacheTTL    time.Duration
@@ -70,15 +72,21 @@ func NewLiveProvider(ctx context.Context, projectID string, mcpClient *mcp.Clien
 		return nil, fmt.Errorf("failed to acquire ADC token source for GKE SDK: %w", err)
 	}
 
-	return &LiveProvider{
+	p := &LiveProvider{
 		projectID:   projectID,
 		tokenSource: ts,
 		mcpClient:   mcpClient,
 		fallback:    NewMockProvider(),
-		cacheTTL:    6 * time.Second,
+		cacheTTL:    45 * time.Second,
 		clientsets:  make(map[string]*kubernetes.Clientset),
 		clusterLocs: make(map[string]string),
-	}, nil
+	}
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, _ = p.GetTopology(bgCtx)
+	}()
+	return p, nil
 }
 
 // ClientsetForCluster returns the cached in-memory k8s.io/client-go Clientset for a cluster.
@@ -92,12 +100,47 @@ func (p *LiveProvider) ClientsetForCluster(clusterName string) (*kubernetes.Clie
 // each running cluster via k8s.io/client-go.
 func (p *LiveProvider) GetTopology(ctx context.Context) (*api.TopologyData, error) {
 	p.mu.RLock()
-	if p.cachedTopo != nil && time.Since(p.cachedAt) < p.cacheTTL {
+	if p.cachedTopo != nil {
+		topo := p.cachedTopo
+		stale := time.Since(p.cachedAt) >= p.cacheTTL
+		alreadyRefreshing := p.refreshing
+		p.mu.RUnlock()
+		if stale && !alreadyRefreshing {
+			p.mu.Lock()
+			if !p.refreshing {
+				p.refreshing = true
+				go func() {
+					defer func() {
+						p.mu.Lock()
+						p.refreshing = false
+						p.mu.Unlock()
+					}()
+					bgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					defer cancel()
+					_, _ = p.fetchLiveTopology(bgCtx)
+				}()
+			}
+			p.mu.Unlock()
+		}
+		return topo, nil
+	}
+	p.mu.RUnlock()
+
+	p.fetchMu.Lock()
+	defer p.fetchMu.Unlock()
+
+	p.mu.RLock()
+	if p.cachedTopo != nil {
 		topo := p.cachedTopo
 		p.mu.RUnlock()
 		return topo, nil
 	}
 	p.mu.RUnlock()
+
+	return p.fetchLiveTopology(ctx)
+}
+
+func (p *LiveProvider) fetchLiveTopology(ctx context.Context) (*api.TopologyData, error) {
 
 	svc, err := container.NewService(ctx, option.WithTokenSource(p.tokenSource))
 	if err != nil {

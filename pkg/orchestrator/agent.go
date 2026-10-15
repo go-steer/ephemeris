@@ -160,9 +160,7 @@ User Prompt: %q`, userPrompt)
 
 	modelsToTry := []string{a.cfg.Model, "gemini-2.5-flash"}
 	for _, modelName := range modelsToTry {
-		resp, err := a.genaiClient.Models.GenerateContent(ctx, modelName, genai.Text(intentPrompt), &genai.GenerateContentConfig{
-			ResponseMIMEType: "application/json",
-		})
+		resp, err := a.genaiClient.Models.GenerateContent(ctx, modelName, genai.Text(intentPrompt), fastGenerateConfig(modelName, "application/json"))
 		if err != nil {
 			continue
 		}
@@ -547,6 +545,25 @@ func buildCompactSynthesisContext(topo *api.TopologyData, telemetry *api.Telemet
 	return string(b)
 }
 
+func fastGenerateConfig(modelName string, responseMIMEType string) *genai.GenerateContentConfig {
+	temp := float32(0.2)
+	cfg := &genai.GenerateContentConfig{
+		Temperature:      &temp,
+		ResponseMIMEType: responseMIMEType,
+	}
+	if strings.HasPrefix(modelName, "gemini-3") {
+		cfg.ThinkingConfig = &genai.ThinkingConfig{
+			ThinkingLevel: genai.ThinkingLevelMinimal,
+		}
+	} else if strings.HasPrefix(modelName, "gemini-2.5") {
+		zero := int32(0)
+		cfg.ThinkingConfig = &genai.ThinkingConfig{
+			ThinkingBudget: &zero,
+		}
+	}
+	return cfg
+}
+
 // SynthesizeLiveArrowJS calls Vertex AI Gemini to synthesize a bespoke, interactive @arrow-js/core component grounded in live GKE topology, container logs, and k8s-lookout findings.
 func (a *Agent) SynthesizeLiveArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, telemetry *api.TelemetryData, findings []api.LookoutFinding, _ string, allScope []api.K8sResource, onStatus func(string)) string {
 	if a.genaiClient == nil || a.cfg.ForceMock {
@@ -595,7 +612,7 @@ CRITICAL ARROWJS SYNTAX RULES:
 			continue
 		}
 		seen[modelName] = true
-		resp, err := a.genaiClient.Models.GenerateContent(ctx, modelName, genai.Text(synthPrompt), nil)
+		resp, err := a.genaiClient.Models.GenerateContent(ctx, modelName, genai.Text(synthPrompt), fastGenerateConfig(modelName, ""))
 		if err != nil {
 			log.Printf("[agent/arrowjs] Vertex AI synthesis with %s failed: %v", modelName, err)
 			continue
@@ -619,23 +636,13 @@ CRITICAL ARROWJS SYNTAX RULES:
 	return ""
 }
 
-// SynthesizeDynamicArrowJS renders the interactive Kubernetes & CRD Explorer for K8s object queries, or asks Vertex AI Gemini 3.8-flash to synthesize bespoke ArrowJS UI code for custom analytical queries.
-func (a *Agent) SynthesizeDynamicArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, telemetry *api.TelemetryData, findings []api.LookoutFinding, envelope string, allScope []api.K8sResource, onStatus func(string)) string {
+// SynthesizeDynamicArrowJS renders the interactive Kubernetes & CRD Explorer fallback for K8s object queries.
+func (a *Agent) SynthesizeDynamicArrowJS(_ context.Context, userPrompt string, intent LLMIntentResult, _ *api.TopologyData, _ *api.TelemetryData, _ []api.LookoutFinding, envelope string, allScope []api.K8sResource, _ func(string)) string {
 	targetKinds := intent.TargetKinds
 	if len(targetKinds) == 0 {
 		targetKinds = extractKindsFromPrompt(userPrompt)
 	}
-	fallbackCode := synthesizeK8sResourcesUI(allScope, intent.TargetCluster, targetKinds, envelope)
-
-	if a.genaiClient == nil || a.cfg.ForceMock {
-		return fallbackCode
-	}
-
-	if liveCode := a.SynthesizeLiveArrowJS(ctx, userPrompt, intent, topo, telemetry, findings, envelope, allScope, onStatus); liveCode != "" {
-		return liveCode
-	}
-
-	return fallbackCode
+	return synthesizeK8sResourcesUI(allScope, intent.TargetCluster, targetKinds, envelope)
 }
 
 func (a *Agent) generateFallbackStream(prompt string, telemetry *api.TelemetryData, onStatus func(string)) string {
