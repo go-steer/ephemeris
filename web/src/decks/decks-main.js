@@ -935,9 +935,14 @@ function initDecksApp() {
 
   scenarioSelect.addEventListener('change', () => {
     const val = scenarioSelect.value;
-    if (val === 'live-ws' && liveWsTopology) {
-      fleet = adaptLiveTopologyToFleet(liveWsTopology);
-      connText.textContent = fleet.mode || 'live';
+    if (val === 'live-ws') {
+      wsClient.sendSetMode('live');
+      if (liveWsTopology) {
+        fleet = adaptLiveTopologyToFleet(liveWsTopology);
+        connText.textContent = fleet.mode || 'live';
+      } else {
+        connText.textContent = 'syncing live...';
+      }
     } else {
       fleet = buildMockFleet({ scenario: val, synthetic: syntheticCount });
       connText.textContent = 'mock';
@@ -1210,10 +1215,14 @@ function initDecksApp() {
   wsClient.onTopology = (topology) => {
     if (!topology) return;
     liveWsTopology = topology;
+    if (!params.has('scenario') && topology.mode === 'live' && scenarioSelect.value !== 'live-ws') {
+      scenarioSelect.value = 'live-ws';
+    }
     if (scenarioSelect.value === 'live-ws') {
       fleet = adaptLiveTopologyToFleet(liveWsTopology);
       connText.textContent = fleet.mode || 'live';
-      syncSceneFromState(false);
+      syncSceneFromState(true);
+      seedInitialEvents();
     }
   };
 
@@ -1225,8 +1234,11 @@ function initDecksApp() {
     }
   };
 
-  wsClient.onUIComponent = (code, telemetry, requestId) => {
-    if (requestId && activeRequestId && requestId !== activeRequestId) return;
+  wsClient.onUIComponent = (uiData, requestId) => {
+    const reqId = requestId || uiData?.request_id;
+    if (reqId && activeRequestId && reqId !== activeRequestId) return;
+    const code = typeof uiData === 'string' ? uiData : uiData?.code;
+    const telemetry = typeof uiData === 'object' ? uiData?.telemetry : {};
     if (activeSynthesisTimer) {
       clearTimeout(activeSynthesisTimer);
       activeSynthesisTimer = null;
@@ -1239,7 +1251,9 @@ function initDecksApp() {
     activeRequestId = null;
   };
 
-  wsClient.onLogStream = (podId, entries) => {
+  wsClient.onLogStream = (logStreamPayload) => {
+    const podId = logStreamPayload?.pod_id;
+    const entries = logStreamPayload?.entries;
     if (!logStreamPodKey || !Array.isArray(entries)) return;
     if (scene.selectedItem?.type === 'pod' && scene.selectedItem?.data?.name === podId) {
       for (const entry of entries) {

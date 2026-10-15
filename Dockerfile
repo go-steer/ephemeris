@@ -41,7 +41,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=go-builder /out/ephemeris /app/ephemeris
 ENV PORT=8080
-ENV EPHEMERIS_MODE=mock
+ENV EPHEMERIS_MODE=live
 EXPOSE 8080
 USER nonroot:nonroot
 ENTRYPOINT ["/app/ephemeris"]

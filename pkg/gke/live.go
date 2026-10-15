@@ -560,6 +560,13 @@ func buildNamespacesFromTypedLists(
 		}
 
 		cpuStr, memStr := extractPodResourceRequests(&pod)
+		podLabels := make(map[string]string, len(pod.Labels)+1)
+		for k, v := range pod.Labels {
+			podLabels[k] = v
+		}
+		if pod.Spec.NodeName != "" {
+			podLabels["ephemeris.io/node"] = pod.Spec.NodeName
+		}
 		nsPods[pod.Namespace] = append(nsPods[pod.Namespace], api.PodNode{
 			ID:          podID,
 			Name:        pod.Name,
@@ -571,7 +578,7 @@ func buildNamespacesFromTypedLists(
 			MemoryUsage: memStr,
 			OwnerID:     ownerID,
 			OwnerKind:   ownerKind,
-			Labels:      pod.Labels,
+			Labels:      podLabels,
 		})
 		nsRawPods[pod.Namespace] = append(nsRawPods[pod.Namespace], pod)
 	}

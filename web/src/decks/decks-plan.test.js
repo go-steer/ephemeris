@@ -14,7 +14,13 @@
 
 import { describe, it, expect } from 'vitest';
 import { THEMES, TOKENS, token, themeById, cssVars } from './themes.js';
-import { buildMockFleet, remediateTarget, nextMockEvent, materializePodAt } from './mock-data.js';
+import {
+  buildMockFleet,
+  adaptLiveTopologyToFleet,
+  remediateTarget,
+  nextMockEvent,
+  materializePodAt,
+} from './mock-data.js';
 import {
   planFleetOverview,
   planClusterDecks,
@@ -82,6 +88,50 @@ describe('Ephemeris Decks Mock Fleet & Scenarios', () => {
     const healed = remediateTarget(primary, crashedPod.controller);
     expect(healed).toBeGreaterThan(0);
     expect(crashedPod.visualClass).toBe('running');
+  });
+
+  it('adapts live /ws TopologyData (with ns.resources and ephemeris.io/node labels) to Decks fleet', () => {
+    const liveTopo = {
+      mode: 'live',
+      project_id: 'gke-demos-345619',
+      clusters: [
+        {
+          name: 'std-stable-1-35',
+          location: 'us-central1',
+          namespaces: [
+            {
+              name: 'default',
+              resources: [
+                { kind: 'Deployment', name: 'web-frontend', replicas: '2/2', status: 'Healthy' },
+                { kind: 'Gateway', name: 'external-gw', status: 'Healthy' },
+              ],
+              pods: [
+                {
+                  name: 'web-frontend-7b9f-x1',
+                  status: 'Running',
+                  restarts: 0,
+                  labels: { 'ephemeris.io/node': 'gke-std-stable-default-pool-a1b2' },
+                },
+                {
+                  name: 'web-frontend-7b9f-x2',
+                  status: 'Running',
+                  restarts: 0,
+                  labels: { 'ephemeris.io/node': 'gke-std-stable-default-pool-a1b2' },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const adapted = adaptLiveTopologyToFleet(liveTopo);
+    expect(adapted.mode).toBe('live');
+    expect(adapted.clusters[0].name).toBe('std-stable-1-35');
+    expect(adapted.clusters[0].controllers.length).toBe(1);
+    expect(adapted.clusters[0].controllers[0].readyReplicas).toBe(2);
+    expect(adapted.clusters[0].ingresses.length).toBe(1);
+    expect(adapted.clusters[0].nodes[0].name).toBe('gke-std-stable-default-pool-a1b2');
   });
 });
 

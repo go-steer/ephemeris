@@ -1472,7 +1472,26 @@ export function adaptLiveTopologyToFleet(topo) {
     const nodesByKey = new Map();
 
     for (const ns of c.namespaces || []) {
+      const resources = ns.resources || [];
+      const resIngresses = resources.filter(
+        (r) =>
+          r.kind === 'Gateway' ||
+          r.kind === 'HTTPRoute' ||
+          r.kind === 'Ingress' ||
+          r.kind === 'Service'
+      );
+      const resWorkloads = resources.filter(
+        (r) =>
+          r.kind === 'Deployment' ||
+          r.kind === 'StatefulSet' ||
+          r.kind === 'DaemonSet' ||
+          r.kind === 'Job' ||
+          r.kind === 'SparkApplication' ||
+          r.kind === 'RayCluster'
+      );
+
       for (const gw of [
+        ...resIngresses,
         ...(ns.gateways || []),
         ...(ns.httpRoutes || []),
         ...(ns.ingresses || []),
@@ -1499,20 +1518,28 @@ export function adaptLiveTopologyToFleet(topo) {
       }
 
       for (const dep of [
+        ...resWorkloads,
         ...(ns.deployments || []),
         ...(ns.statefulSets || []),
         ...(ns.daemonSets || []),
         ...(ns.replicaSets || []),
       ]) {
         const key = `${ns.name}/${dep.name}`;
+        let readyReplicas = dep.readyReplicas ?? 0;
+        let desiredReplicas = dep.replicas ?? 1;
+        if (typeof dep.replicas === 'string' && dep.replicas.includes('/')) {
+          const [rStr, dStr] = dep.replicas.split('/');
+          readyReplicas = Number(rStr) || 0;
+          desiredReplicas = Math.max(1, Number(dStr) || 1);
+        }
         ctrlByKey.set(key, {
           key,
           name: dep.name,
           kind: dep.kind || 'Deployment',
           namespace: ns.name,
           cluster: c.name,
-          readyReplicas: dep.readyReplicas || 0,
-          desiredReplicas: dep.replicas || 1,
+          readyReplicas,
+          desiredReplicas,
           cpuMillis: 400,
           cpuCapMillis: 1000,
           cpuPct: 0.45,
@@ -1580,7 +1607,10 @@ export function adaptLiveTopologyToFleet(topo) {
           }
         }
 
-        const nodeName = p.node || `gke-${c.name}-default-${(pods.length % 4) + 1}`;
+        const nodeName =
+          p.node ||
+          p.labels?.['ephemeris.io/node'] ||
+          `gke-${c.name}-default-${(pods.length % 4) + 1}`;
         const nodePool = nodeName.includes('highmem') ? 'highmem-pool' : 'default-pool';
         const nodeKey = `${nodePool}/${nodeName}`;
         if (!nodesByKey.has(nodeKey)) {
@@ -1627,7 +1657,7 @@ export function adaptLiveTopologyToFleet(topo) {
           restarts: p.restarts || 0,
           controller: matchedCtrlKey,
           controllerName: matchedCtrlKey.split('/')[1],
-          controllerKind: 'Deployment',
+          controllerKind: ctrlByKey.get(matchedCtrlKey)?.kind || 'Deployment',
           ingresses: matchedIngKeys,
           serviceName: `${matchedCtrlKey.split('/')[1]}-svc`,
           node: nodeName,
@@ -1660,11 +1690,15 @@ export function adaptLiveTopologyToFleet(topo) {
     controllers.push(...ctrlByKey.values());
     ingresses.push(...ingByKey.values());
     const nodes = [...nodesByKey.values()];
+    const namespaces = [
+      ...new Set([...pods.map((p) => p.namespace), ...controllers.map((ct) => ct.namespace)]),
+    ].sort();
 
     return {
       name: c.name,
       location: c.location || 'us-central1',
       tier: topo.mode === 'live' ? 'Live GKE Cluster' : 'Mock GKE Cluster',
+      namespaces,
       pods,
       podCount: pods.length,
       controllers,
@@ -1677,7 +1711,7 @@ export function adaptLiveTopologyToFleet(topo) {
   return {
     scenario: 'live-ws',
     mode: topo.mode || 'live',
-    projectID: topo.projectId || 'gke-demos-345619',
+    projectID: topo.project_id || topo.projectId || 'gke-demos-345619',
     updatedAt: new Date().toISOString(),
     clusters,
   };
