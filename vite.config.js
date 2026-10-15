@@ -20,6 +20,12 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, 'dist'),
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'web/index.html'),
+        decks: resolve(__dirname, 'web/decks.html'),
+      },
+    },
   },
   server: {
     port: 5173,

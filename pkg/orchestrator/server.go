@@ -206,11 +206,25 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
 	// Serve frontend assets
+	var assetHandler http.Handler
 	if s.cfg.WebDir != "" {
 		log.Printf("Serving web assets from disk: %s", s.cfg.WebDir)
-		mux.Handle("/", http.FileServer(http.Dir(s.cfg.WebDir)))
+		assetHandler = http.FileServer(http.Dir(s.cfg.WebDir))
 	} else if s.cfg.SPAFileSystem != nil {
-		mux.Handle("/", http.FileServer(http.FS(s.cfg.SPAFileSystem)))
+		assetHandler = http.FileServer(http.FS(s.cfg.SPAFileSystem))
+	}
+	if assetHandler != nil {
+		mux.HandleFunc("/decks", func(w http.ResponseWriter, r *http.Request) {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/decks.html"
+			assetHandler.ServeHTTP(w, r2)
+		})
+		mux.HandleFunc("/decks/", func(w http.ResponseWriter, r *http.Request) {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/decks.html"
+			assetHandler.ServeHTTP(w, r2)
+		})
+		mux.Handle("/", assetHandler)
 	}
 
 	return mux

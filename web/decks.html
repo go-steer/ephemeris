@@ -1,0 +1,311 @@
+<!doctype html>
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ephemeris · decks</title>
+    <link rel="stylesheet" href="/src/decks/decks-styles.css" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="labels"></div>
+
+    <header id="topbar">
+      <div class="brand">
+        <span class="logo"></span>
+        <span class="wordmark">ephemeris decks</span>
+        <span class="sep"></span>
+        <div class="nav-crumb">
+          <button
+            id="fleet-btn"
+            class="fleet-btn"
+            title="Multi-Cluster Fleet Overview Deck (shortcut: 0)"
+          >
+            ⊞ Fleet <span id="fleet-count">(6)</span>
+          </button>
+          <span class="crumb-arrow">›</span>
+          <select id="cluster-select" title="Dive into a specific GKE cluster's decks"></select>
+        </div>
+        <span id="conn" class="conn">
+          <span class="led"></span>
+          <span id="conn-text">mock</span>
+        </span>
+      </div>
+
+      <div class="legend" role="group" aria-label="Filter by pod state">
+        <button class="chip" data-state="running" title="Filter to Running pods">
+          <span class="sw"></span><span>Running</span><b id="c-running">0</b>
+        </button>
+        <button class="chip" data-state="transition" title="Filter to Updating / Rollout pods">
+          <span class="sw"></span><span>Updating</span><b id="c-transition">0</b>
+        </button>
+        <button
+          class="chip"
+          data-state="crashed"
+          title="Filter to CrashLoopBackOff / OOMKilled pods"
+        >
+          <span class="sw"></span><span>Crashed</span><b id="c-crashed">0</b>
+        </button>
+        <button class="chip" data-state="pending" title="Filter to Pending pods">
+          <span class="sw"></span><span>Pending</span><b id="c-pending">0</b>
+        </button>
+        <button class="chip" data-state="suspended" title="Filter to Completed / Standby pods">
+          <span class="sw"></span><span>Standby</span><b id="c-suspended">0</b>
+        </button>
+      </div>
+
+      <div class="controls">
+        <button
+          id="drill-pill"
+          class="drill-pill"
+          hidden
+          title="Click to reset Deck 3 Pod drill-down scope and show all cluster pods"
+        >
+          <span id="drill-pill-text">Scoped</span>
+          <span class="drill-x">✕</span>
+        </button>
+
+        <select id="scenario-select" title="Mock Chaos Scenario / Synthetic Scale"></select>
+        <select id="ns" aria-label="Namespace" title="Filter by Kubernetes Namespace">
+          <option value="">All namespaces</option>
+        </select>
+        <input
+          id="search"
+          type="search"
+          placeholder="Filter name /"
+          autocomplete="off"
+          aria-label="Filter by name"
+        />
+
+        <div id="layout" class="seg" role="group" aria-label="Deck layout">
+          <span>Decks</span>
+          <button
+            data-layout="3-deck"
+            class="active"
+            title="3 Decks: Deck 1 Ingress + Deck 2 Workloads & Namespaces + Deck 3 Pods & Substrate"
+          >
+            3-deck (+ing)
+          </button>
+          <button
+            data-layout="2-deck"
+            title="2 Decks: Deck 2 Workloads & Namespaces + Deck 3 Pods & Substrate"
+          >
+            2-deck
+          </button>
+          <button data-layout="combined" title="Single horizontal island">combined</button>
+        </div>
+
+        <div id="bottom-mode" class="seg" role="group" aria-label="Deck 3 Pod grouping mode">
+          <span>Deck 3</span>
+          <button
+            data-bottom="namespaces"
+            class="active"
+            title="Show Pods grouped by Namespace on Deck 3 (shortcut: b)"
+          >
+            pods + namespaces
+          </button>
+          <button
+            data-bottom="nodes"
+            title="Show Pods packed onto GKE Compute Nodes & Node Pools on Deck 3 (shortcut: b)"
+          >
+            pods + nodes
+          </button>
+        </div>
+
+        <div id="deckctl" class="seg" role="group" aria-label="Deck movement">
+          <button
+            id="deck-link"
+            class="active"
+            title="Link decks when Alt+Dragging horizontally (toggle)"
+          >
+            🔗
+          </button>
+          <button id="deck-reset" hidden title="Reset slid decks to default positions (r)">
+            ↺
+          </button>
+        </div>
+
+        <div id="beams" class="seg" role="group" aria-label="Cross-deck beams">
+          <span>Beams</span>
+          <button
+            data-beams="focus"
+            class="active"
+            title="Show bundled beams for hovered or selected item"
+          >
+            focus
+          </button>
+          <button data-beams="all" title="Show all cross-deck ownership and ingress beams">
+            all
+          </button>
+        </div>
+
+        <div id="soloctl" class="seg" role="group" aria-label="Solo deck (keys 1-4)">
+          <span>Solo</span>
+          <button data-solo="ingress" title="Solo Deck 1: Ingress & Routing (key 1)">1</button>
+          <button data-solo="pods" title="Solo Deck 2: Workloads & Namespaces (key 2)">2</button>
+          <button
+            data-solo="controllers"
+            title="Solo Deck 3: Pods & Namespaces / GKE Nodes (key 3)"
+          >
+            3
+          </button>
+          <button data-solo="all" class="active" title="Show all decks (key 4)">All</button>
+        </div>
+
+        <div id="labelmode" class="seg" role="group" aria-label="Pod labels">
+          <span>Labels</span>
+          <button data-mode="auto" class="active" title="Show labels for crashed and focused items">
+            auto
+          </button>
+          <button data-mode="all" title="Show more labels when zoomed out">all</button>
+          <button data-mode="off" title="Hide floating pad and pod labels">off</button>
+        </div>
+
+        <button id="home" class="icon-btn" title="Reset camera view (Home / h)">⌂</button>
+        <div id="theme" class="themes"></div>
+        <a href="/" class="icon-btn" title="Open classic Ephemeris 3D topology view">↗ Classic</a>
+      </div>
+    </header>
+
+    <aside id="feedpanel" class="feed-panel" aria-label="Live Kubernetes event feed">
+      <div class="feed-head">
+        <span class="feed-title">K8s Events</span>
+        <span id="feed-rate" class="feed-rate">live stream</span>
+        <button id="feed-pause" class="icon-btn" title="Pause / resume event stream">⏸</button>
+        <button id="feed-toggle" class="icon-btn" title="Collapse / expand events panel (e)">
+          ‹
+        </button>
+      </div>
+      <div id="feed-list" class="feed-list" role="log" aria-live="polite"></div>
+      <form id="decks-prompt-form" class="decks-prompt-form" autocomplete="off">
+        <div class="decks-prompt-target">
+          <span class="dp-badge">⚡ GEMINI 3.8</span>
+          <span id="decks-prompt-chip" class="dp-chip">Cluster Scope</span>
+        </div>
+        <div class="decks-prompt-row">
+          <input
+            id="decks-prompt-input"
+            type="text"
+            placeholder="Ask Gemini to synthesize ArrowJS triage..."
+            aria-label="Gemini triage prompt"
+          />
+          <button id="decks-prompt-submit" type="submit" title="Synthesize ArrowJS Triage UI">
+            ⚡
+          </button>
+        </div>
+      </form>
+    </aside>
+
+    <section
+      id="triage-drawer"
+      class="triage-drawer hidden"
+      aria-label="Generative ArrowJS Triage Sandbox"
+    >
+      <div class="triage-drawer-head">
+        <div class="td-title-wrap">
+          <span class="td-eyebrow">⚡ GEMINI 3.8 · SHADOWROOT SANDBOX</span>
+          <strong id="triage-drawer-title">ArrowJS Incident Triage</strong>
+        </div>
+        <div class="td-actions">
+          <button id="triage-cancel" class="icon-btn td-cancel" hidden title="Stop synthesis turn">
+            ⏹ Stop
+          </button>
+          <button id="triage-close" class="close" aria-label="Close triage sandbox">×</button>
+        </div>
+      </div>
+      <div id="triage-status" class="triage-status" hidden>
+        <span class="td-spinner"></span>
+        <span id="triage-status-text">Synthesizing ArrowJS triage interface...</span>
+      </div>
+      <div id="triage-sandbox-host" class="triage-sandbox-host"></div>
+    </section>
+
+    <aside id="panel" class="hidden" aria-label="Resource inspector">
+      <button id="panel-close" class="close" aria-label="Close">×</button>
+      <div id="panel-content"></div>
+    </aside>
+
+    <div id="bar-legend" aria-label="3D Pad Horizontal Bars Legend">
+      <span class="bl-title">3D Pad Bars (Back → Front):</span>
+      <span class="bl-item"
+        ><i class="bl-sw sw-rep"></i><b>Bar 1</b>
+        <span id="bl-bar1">Replicas (Deck 2) / Pod Slots (Nodes)</span></span
+      >
+      <span class="bl-item"
+        ><i class="bl-sw sw-cpu"></i><b>Bar 2</b> <span id="bl-bar2">CPU Load %</span></span
+      >
+      <span class="bl-item"
+        ><i class="bl-sw sw-mem"></i><b>Bar 3</b> <span id="bl-bar3">Memory %</span></span
+      >
+    </div>
+
+    <div id="deck-hint">
+      <kbd>0</kbd> Fleet · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Solo deck · <kbd>b</kbd> Deck 3
+      (Namespaces/Nodes) · <kbd>Click Namespace</kbd> Drill pods · <kbd>Alt</kbd>+drag slide ·
+      <kbd>?</kbd> Help
+    </div>
+
+    <div id="zoomctl" role="group" aria-label="Zoom">
+      <button id="zoom-in" title="Zoom in (+)">+</button>
+      <button id="zoom-out" title="Zoom out (-)">−</button>
+    </div>
+
+    <footer id="statusbar">
+      <span id="status-mode">Level 2 · Single-Cluster Decks (3-deck)</span>
+      <span id="status-summary"></span>
+      <span class="spacer"></span>
+      <span id="clock"></span>
+    </footer>
+
+    <div id="help" class="hidden" role="dialog" aria-label="Keyboard shortcuts">
+      <div class="help-card">
+        <h3>Ephemeris Decks — Controls & Shortcuts</h3>
+        <dl>
+          <dt>Drag / Scroll</dt>
+          <dd>Orbit camera / Zoom in & out</dd>
+          <dt>Right-drag</dt>
+          <dd>Pan camera across the deck</dd>
+          <dt>Alt + drag</dt>
+          <dd>Slide a deck horizontally out from under/above other decks</dd>
+          <dt>Shift + drag</dt>
+          <dd>Raise or lower the vertical spacing gap between decks</dd>
+          <dt>b</dt>
+          <dd>Toggle Deck 3 between Pods+Namespaces and Pods+GKE Nodes</dd>
+          <dt>Click Namespace</dt>
+          <dd>Scope Deck 3 Pods to that Namespace (dynamically enlarges pods)</dd>
+          <dt>0</dt>
+          <dd>Toggle Level 1 Multi-Cluster Fleet Overview Deck</dd>
+          <dt>1 / 2 / 3 / 4</dt>
+          <dd>Solo Deck 1 (Ingress), Deck 2 (Workloads), Deck 3 (Pods), or Show All</dd>
+          <dt>r</dt>
+          <dd>Reset slid decks back to default alignment</dd>
+          <dt>h / Home</dt>
+          <dd>Frame camera on active view</dd>
+          <dt>/</dt>
+          <dd>Focus name search filter</dd>
+          <dt>e</dt>
+          <dd>Collapse / expand K8s Events feed</dd>
+          <dt>Esc</dt>
+          <dd>Close inspector / clear filters</dd>
+        </dl>
+      </div>
+    </div>
+
+    <script type="module" src="/src/decks/decks-main.js"></script>
+  </body>
+</html>
