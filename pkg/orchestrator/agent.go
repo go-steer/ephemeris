@@ -162,6 +162,7 @@ User Prompt: %q`, userPrompt)
 	for _, modelName := range modelsToTry {
 		resp, err := a.genaiClient.Models.GenerateContent(ctx, modelName, genai.Text(intentPrompt), fastGenerateConfig(modelName, "application/json"))
 		if err != nil {
+			log.Printf("[agent/intent] model %s error: %v", modelName, err)
 			continue
 		}
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
@@ -547,20 +548,15 @@ func buildCompactSynthesisContext(topo *api.TopologyData, telemetry *api.Telemet
 
 func fastGenerateConfig(modelName string, responseMIMEType string) *genai.GenerateContentConfig {
 	temp := float32(0.2)
+	zero := int32(0)
 	cfg := &genai.GenerateContentConfig{
 		Temperature:      &temp,
 		ResponseMIMEType: responseMIMEType,
-	}
-	if strings.HasPrefix(modelName, "gemini-3") {
-		cfg.ThinkingConfig = &genai.ThinkingConfig{
-			ThinkingLevel: genai.ThinkingLevelMinimal,
-		}
-	} else if strings.HasPrefix(modelName, "gemini-2.5") {
-		zero := int32(0)
-		cfg.ThinkingConfig = &genai.ThinkingConfig{
+		ThinkingConfig: &genai.ThinkingConfig{
 			ThinkingBudget: &zero,
-		}
+		},
 	}
+	_ = modelName
 	return cfg
 }
 
@@ -577,17 +573,18 @@ func (a *Agent) SynthesizeLiveArrowJS(ctx context.Context, userPrompt string, in
 	compactJSON := buildCompactSynthesisContext(topo, telemetry, intent, findings, allScope)
 
 	synthPrompt := fmt.Sprintf(`You are the Ephemeris Agentic UI Compiler writing a reactive SRE triage & observability interface using @arrow-js/core.
-Synthesize a self-contained ArrowJS component that directly answers the user's Kubernetes/GKE prompt using the live GKE cluster topology, container logs/events, and k8s-lookout findings below.
+Synthesize a concise, self-contained ArrowJS component (<85 lines of JS) that directly answers the user's Kubernetes/GKE prompt using the live GKE cluster topology, container logs/events, and k8s-lookout findings below.
 
 User Prompt: %q
 Resolved Intent Archetype: %q (Target Cluster: %q, Namespace: %q, Pod/Workload: %q, Kinds: %v)
 Intent Reasoning: %q
 
-Live GKE & MCP Context JSON:
+Live GKE & MCP Context JSON (ALREADY bound to runtime variable "data"):
 %s
 
 SANDBOX ENVIRONMENT (Isolated ShadowRoot):
-- Available variables in scope: reactive, html (from @arrow-js/core), data (telemetry object), container (mount element).
+- Available variables in scope: reactive, html (from @arrow-js/core), data (pre-populated with the exact JSON above: data.pods, data.k8s_resources, data.clusters, data.recent_logs, data.lookout_findings, data.focused_cluster, data.selected_pod, data.metrics), and container (mount element).
+- DO NOT copy-paste large JSON arrays into the code; read directly from (data.pods || []), (data.k8s_resources || []), (data.clusters || []), (data.recent_logs || []), and (data.lookout_findings || []).
 - window, document, fetch, localStorage are undefined (masked for security). DO NOT reference window or document.
 - To focus a Pod in the 3D WebGL scene when clicked:
   container.dispatchEvent(new CustomEvent('ephemeris-select-pod', { detail: { podId: podName, namespace: ns, clusterName: cluster }, bubbles: true, composed: true }))
@@ -600,9 +597,8 @@ CRITICAL ARROWJS SYNTAX RULES:
 1. NEVER use partial attribute interpolation like style="color: ${x}" or class="btn ${y}". ArrowJS throws 'Invalid HTML position' if an attribute mixes static text and ${...}. Wrap the ENTIRE attribute value inside a single ${() => ...} expression:
    style="${() => 'color: ' + (state.active ? '#38bdf8' : '#94a3b8') + '; cursor: pointer;'}"
 2. Define const state = reactive({ ... }); with interactive tabs or filters, define const template = html`+"`...`"+`; and end with template(container);
-3. Embed the real cluster/pod/resource/log data from the JSON directly as JavaScript arrays/objects in your code so the UI renders rich, accurate live GKE data immediately. Include clickable rows/buttons that dispatch ephemeris-select-pod or ephemeris-focus-resource on container.
-4. Return ONLY valid JavaScript code (no markdown fences, no import/export statements).
-5. Style the root container with style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;"`,
+3. Return ONLY valid JavaScript code (no markdown fences, no import/export statements).
+4. Style the root container with style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;"`,
 		userPrompt, intent.Archetype, intent.TargetCluster, intent.TargetNamespace, intent.TargetPod, intent.TargetKinds, intent.Reasoning, compactJSON)
 
 	modelsToTry := []string{a.cfg.Model, "gemini-2.5-flash", "gemini-2.0-flash"}
@@ -625,11 +621,12 @@ CRITICAL ARROWJS SYNTAX RULES:
 			cleaned := sanitizeGeneratedArrowJS(rawCode.String())
 			if strings.Contains(cleaned, "reactive(") && strings.Contains(cleaned, "html`") && strings.Contains(cleaned, "template(container)") {
 				a.cfg.Model = modelName
+				hydrated := fmt.Sprintf("const __liveCtx = %s;\ndata = Object.assign({ pods: [], k8s_resources: [], clusters: [], recent_logs: [], lookout_findings: [], metrics: {} }, data || {}, __liveCtx);\n%s", compactJSON, cleaned)
 				log.Printf("[agent/arrowjs] Synthesized bespoke ArrowJS UI (%d bytes) via Vertex AI %s for prompt=%q", len(cleaned), modelName, userPrompt)
 				if onStatus != nil {
 					onStatus(fmt.Sprintf("✨ [mast:arrowjs-compiler] Synthesized bespoke ArrowJS UI via Vertex AI %s", modelName))
 				}
-				return cleaned
+				return hydrated
 			}
 		}
 	}

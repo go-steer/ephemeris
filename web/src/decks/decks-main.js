@@ -445,7 +445,7 @@ function initDecksApp() {
     if (activeSynthesisTimer) {
       clearTimeout(activeSynthesisTimer);
     }
-    const timeoutMs = useLiveBackend ? 25000 : 320;
+    const timeoutMs = useLiveBackend ? 45000 : 320;
     activeSynthesisTimer = setTimeout(() => {
       if (activeRequestId !== reqId) return;
       if (sandboxRuntime) {

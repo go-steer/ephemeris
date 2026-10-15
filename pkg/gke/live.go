@@ -82,7 +82,7 @@ func NewLiveProvider(ctx context.Context, projectID string, mcpClient *mcp.Clien
 		clusterLocs: make(map[string]string),
 	}
 	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 		defer cancel()
 		_, _ = p.GetTopology(bgCtx)
 	}()
@@ -115,7 +115,7 @@ func (p *LiveProvider) GetTopology(ctx context.Context) (*api.TopologyData, erro
 						p.refreshing = false
 						p.mu.Unlock()
 					}()
-					bgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 					defer cancel()
 					_, _ = p.fetchLiveTopology(bgCtx)
 				}()
