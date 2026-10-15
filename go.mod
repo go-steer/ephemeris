@@ -5,7 +5,7 @@ go 1.26.9
 require (
 	github.com/go-steer/mast v0.9.0
 	github.com/gorilla/websocket v1.5.3
-	golang.org/x/oauth2 v0.36.0
+	golang.org/x/oauth2 v0.37.0
 	google.golang.org/adk/v2 v2.2.0
 	google.golang.org/api v0.291.0
 	google.golang.org/genai v1.71.0
