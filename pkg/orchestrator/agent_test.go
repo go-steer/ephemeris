@@ -289,3 +289,18 @@ func TestRepairArrowJSAttributesGo(t *testing.T) {
 		t.Errorf("expected style attribute to be repaired to ArrowJS reactive function, got %s", repaired)
 	}
 }
+
+func TestSanitizeGeneratedArrowJS(t *testing.T) {
+	raw := "```javascript\nimport { reactive, html } from '@arrow-js/core';\nexport const state = reactive({ tab: 'overview' });\nconst template = html`<div style=\"color: ${state.tab};\">Test</div>`;\nwindow.dispatchEvent(new CustomEvent('ephemeris-select-pod'));\ntemplate(container);\n```"
+	cleaned := sanitizeGeneratedArrowJS(raw)
+	if strings.Contains(cleaned, "import ") {
+		t.Errorf("expected import statement to be stripped, got %s", cleaned)
+	}
+	if strings.Contains(cleaned, "export ") {
+		t.Errorf("expected export statement to be stripped, got %s", cleaned)
+	}
+	if strings.Contains(cleaned, "window.dispatchEvent(") {
+		t.Errorf("expected window.dispatchEvent to be rewritten to container.dispatchEvent, got %s", cleaned)
+	}
+	assertNoPartialAttributeInterpolation(t, cleaned)
+}

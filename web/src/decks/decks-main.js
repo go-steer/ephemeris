@@ -90,6 +90,7 @@ function initDecksApp() {
 
   let activeRequestId = null;
   let activeSynthesisTimer = null;
+  let activeFallbackPayload = null;
   let logStreamPodKey = null;
   let logStreamTimer = null;
   let logStreamSeq = 0;
@@ -355,23 +356,32 @@ function initDecksApp() {
     logStreamSeq = 0;
 
     // Request live /ws log stream if backend connected
-    wsClient.selectNode(pod.name, `k8s://namespaces/${pod.namespace}/pods/${pod.name}`);
+    const activeCluster = getActiveCluster();
+    wsClient.selectNode(
+      pod.name,
+      `gke://${activeCluster.name}/${pod.namespace || 'default'}/${pod.name}`
+    );
 
-    // Also run high-frequency simulated container log stream when in mock/mega-scale mode
-    logStreamTimer = setInterval(() => {
-      if (scene.selectedItem?.type !== 'pod' || scene.selectedItem?.data?.key !== logStreamPodKey) {
-        stopPodLogStream();
-        return;
-      }
-      const entry = generateSimulatedLogEntry(scene.selectedItem.data, logStreamSeq++);
-      if (Array.isArray(scene.selectedItem.data.logs)) {
-        scene.selectedItem.data.logs.push(entry);
-        if (scene.selectedItem.data.logs.length > 40) {
-          scene.selectedItem.data.logs.shift();
+    // Only run simulated container log stream when in offline / client-side mock scenarios
+    if (scenarioSelect.value !== 'live-ws' || !wsClient.isConnected) {
+      logStreamTimer = setInterval(() => {
+        if (
+          scene.selectedItem?.type !== 'pod' ||
+          scene.selectedItem?.data?.key !== logStreamPodKey
+        ) {
+          stopPodLogStream();
+          return;
         }
-      }
-      appendLogLineToInspector(entry);
-    }, 1100);
+        const entry = generateSimulatedLogEntry(scene.selectedItem.data, logStreamSeq++);
+        if (Array.isArray(scene.selectedItem.data.logs)) {
+          scene.selectedItem.data.logs.push(entry);
+          if (scene.selectedItem.data.logs.length > 40) {
+            scene.selectedItem.data.logs.shift();
+          }
+        }
+        appendLogLineToInspector(entry);
+      }, 1100);
+    }
 
     renderInspector(scene.selectedItem);
   }
@@ -386,16 +396,28 @@ function initDecksApp() {
         : null);
 
     const payload = synthesizeDecksTriagePayload(targetItem, customPrompt, c);
+    activeFallbackPayload = payload;
     if (triageDrawer) {
       triageDrawer.classList.remove('hidden');
     }
     if (triageTitleEl) {
       triageTitleEl.textContent = payload.title;
     }
+
+    const useLiveBackend =
+      wsClient.isConnected &&
+      (scenarioSelect.value === 'live-ws' ||
+        (syntheticCount === 0 && scenarioSelect.value !== 'mega-scale'));
+
+    if (useLiveBackend && sandboxRuntime) {
+      sandboxRuntime.clear();
+    }
+
     if (triageStatusEl && triageStatusTextEl) {
       triageStatusEl.hidden = false;
-      triageStatusTextEl.textContent =
-        'Gemini 3.8 Flash · Compiling ArrowJS ShadowRoot component...';
+      triageStatusTextEl.textContent = useLiveBackend
+        ? '🤖 Connecting to Vertex AI Gemini & GCP MCP via /ws...'
+        : 'Gemini 3.8 Flash · Compiling ArrowJS ShadowRoot component...';
     }
     if (triageCancelBtn) {
       triageCancelBtn.hidden = false;
@@ -404,22 +426,26 @@ function initDecksApp() {
     const reqId = `decks-req-${Date.now()}`;
     activeRequestId = reqId;
 
-    // Send over /ws if connected in live-ws mode
+    // Send over /ws with gke:// resource URI and active cluster context
     const rawData = targetItem?.data || {};
-    const nodeId = rawData.name || 'cluster';
+    const nodeId = rawData.name || c.name || 'cluster';
     const resourceUri = rawData.namespace
-      ? `k8s://namespaces/${rawData.namespace}/${targetItem?.type || 'pods'}/${nodeId}`
-      : `k8s://cluster/${nodeId}`;
-    wsClient.sendPrompt(
-      nodeId,
-      resourceUri,
-      customPrompt || defaultPromptForItem(targetItem),
-      reqId
-    );
+      ? `gke://${c.name}/${rawData.namespace}/${nodeId}`
+      : `gke://${c.name}/default/${nodeId}`;
+    const basePrompt = customPrompt || defaultPromptForItem(targetItem);
+    const contextualPrompt =
+      rawData.name && !basePrompt.includes(rawData.name)
+        ? `${basePrompt} (cluster: ${c.name}, ${targetItem?.type || 'resource'}: ${rawData.namespace ? rawData.namespace + '/' : ''}${rawData.name}, status: ${rawData.status || 'Running'})`
+        : !basePrompt.includes(c.name)
+          ? `${basePrompt} (cluster: ${c.name})`
+          : basePrompt;
+
+    wsClient.sendPrompt(nodeId, resourceUri, contextualPrompt, reqId);
 
     if (activeSynthesisTimer) {
       clearTimeout(activeSynthesisTimer);
     }
+    const timeoutMs = useLiveBackend ? 25000 : 320;
     activeSynthesisTimer = setTimeout(() => {
       if (activeRequestId !== reqId) return;
       if (sandboxRuntime) {
@@ -432,7 +458,7 @@ function initDecksApp() {
         triageCancelBtn.hidden = true;
       }
       activeRequestId = null;
-    }, 320);
+    }, timeoutMs);
   }
 
   function renderInspector(item) {
@@ -1125,6 +1151,13 @@ function initDecksApp() {
 
   window.addEventListener('ephemeris-select-pod', (e) => {
     const detail = e.detail || {};
+    if (
+      detail.clusterName &&
+      detail.clusterName !== activeClusterName &&
+      fleet.clusters.some((cl) => cl.name === detail.clusterName)
+    ) {
+      diveIntoCluster(detail.clusterName);
+    }
     if (detail.type === 'drill-controller' && detail.key) {
       scene.setDrillFilter({
         type: 'controller',
@@ -1144,6 +1177,44 @@ function initDecksApp() {
         setBottomModeUI('nodes');
       }
       scene.focusByKey(detail.type, detail.key);
+    } else if (rawKey) {
+      const c = getActiveCluster();
+      const matchPod = (c.pods || []).find(
+        (p) =>
+          p.key === rawKey ||
+          p.name === rawKey ||
+          (detail.namespace && p.key === `${detail.namespace}/${rawKey}`)
+      );
+      if (matchPod) {
+        scene.focusByKey('pod', matchPod.key);
+      }
+    }
+  });
+
+  window.addEventListener('ephemeris-focus-resource', (e) => {
+    const detail = e.detail || {};
+    if (
+      detail.clusterName &&
+      detail.clusterName !== activeClusterName &&
+      fleet.clusters.some((cl) => cl.name === detail.clusterName)
+    ) {
+      diveIntoCluster(detail.clusterName);
+    }
+    const c = getActiveCluster();
+    const resName = detail.resourceName || detail.name || '';
+    const ns = detail.namespace || '';
+    const ing = (c.ingresses || []).find(
+      (ig) => ig.name === resName || ig.key === `${ns}/${resName}` || ig.key === resName
+    );
+    if (ing) {
+      scene.focusByKey('ingress', ing.key);
+      return;
+    }
+    const ctrl = (c.controllers || []).find(
+      (ct) => ct.name === resName || ct.key === `${ns}/${resName}` || ct.key === resName
+    );
+    if (ctrl) {
+      scene.focusByKey('controller', ctrl.key);
     }
   });
 
@@ -1243,12 +1314,57 @@ function initDecksApp() {
       clearTimeout(activeSynthesisTimer);
       activeSynthesisTimer = null;
     }
+    if (triageTitleEl && typeof uiData === 'object' && uiData?.archetype) {
+      const targetLabel =
+        uiData.target_pod ||
+        uiData.target_cluster ||
+        uiData.target_namespace ||
+        getActiveCluster().name;
+      triageTitleEl.textContent = `Vertex AI · ${uiData.archetype} · ${targetLabel}`;
+    }
     if (sandboxRuntime && code) {
-      sandboxRuntime.execute(code, telemetry || {});
+      const res = sandboxRuntime.execute(code, telemetry || {});
+      if (!res.success && activeFallbackPayload) {
+        sandboxRuntime.execute(activeFallbackPayload.code, activeFallbackPayload.telemetry);
+      }
     }
     if (triageStatusEl) triageStatusEl.hidden = true;
     if (triageCancelBtn) triageCancelBtn.hidden = true;
     activeRequestId = null;
+  };
+
+  wsClient.onError = (errMsg) => {
+    if (!activeRequestId) return;
+    if (activeSynthesisTimer) {
+      clearTimeout(activeSynthesisTimer);
+      activeSynthesisTimer = null;
+    }
+    if (sandboxRuntime && activeFallbackPayload) {
+      sandboxRuntime.execute(activeFallbackPayload.code, activeFallbackPayload.telemetry);
+    }
+    if (triageStatusEl && triageStatusTextEl) {
+      triageStatusTextEl.textContent = `Backend fallback: ${errMsg?.message || 'error'}`;
+      setTimeout(() => {
+        if (triageStatusEl) triageStatusEl.hidden = true;
+      }, 2500);
+    }
+    if (triageCancelBtn) triageCancelBtn.hidden = true;
+    activeRequestId = null;
+  };
+
+  wsClient.onTelemetry = (telemetry) => {
+    const entries = telemetry?.logs;
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    if (scene.selectedItem?.type === 'pod') {
+      scene.selectedItem.data.logs = entries;
+      const logBox = panelContent.querySelector('.log-box');
+      if (logBox) {
+        logBox.innerHTML = '';
+        for (const entry of entries) {
+          appendLogLineToInspector(entry);
+        }
+      }
+    }
   };
 
   wsClient.onLogStream = (logStreamPayload) => {

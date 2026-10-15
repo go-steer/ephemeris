@@ -223,6 +223,12 @@ func injectGeminiReasoning(code string, reasoning string, modelName string, look
 		insertPos := idx + len(target)
 		return code[:insertPos] + "\n    " + banner + code[insertPos:]
 	}
+	if htmlIdx := strings.Index(code, "html`"); htmlIdx != -1 {
+		if gtIdx := strings.Index(code[htmlIdx:], ">"); gtIdx != -1 {
+			insertPos := htmlIdx + gtIdx + 1
+			return code[:insertPos] + "\n    " + banner + code[insertPos:]
+		}
+	}
 	return code
 }
 
@@ -254,6 +260,15 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 		}
 	}
 
+	var allScope []api.K8sResource
+	if a.mastHarness != nil && (intent.Archetype == ArchetypeDynamicCustom || (a.genaiClient != nil && !a.cfg.ForceMock)) {
+		var resEnvelope string
+		_, allScope, resEnvelope = a.mastHarness.RunResourceSpecialist(ctx, intent, topo, onStatus)
+		if resEnvelope != "" && intent.Archetype == ArchetypeDynamicCustom {
+			envelope = resEnvelope
+		}
+	}
+
 	var code string
 	switch intent.Archetype {
 	case ArchetypeIssuesFleetMatrix:
@@ -266,16 +281,8 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 		}
 		code = synthesizeIssuesListUI(topo, findings, envelope, intent.TargetCluster)
 	case ArchetypeDynamicCustom:
-		var allScope []api.K8sResource
-		var resEnvelope string
-		if a.mastHarness != nil {
-			_, allScope, resEnvelope = a.mastHarness.RunResourceSpecialist(ctx, intent, topo, onStatus)
-		}
-		if resEnvelope != "" {
-			envelope = resEnvelope
-		}
 		if onStatus != nil {
-			onStatus("🧠 [mast:arrowjs-compiler] Synthesizing Dynamic Kubernetes & CRD Explorer UI via Gemini 3.8-flash...")
+			onStatus("🧠 [mast:arrowjs-compiler] Synthesizing Dynamic Kubernetes & CRD Explorer UI via Gemini...")
 		}
 		code = a.SynthesizeDynamicArrowJS(ctx, userPrompt, intent, topo, telemetry, findings, envelope, allScope, onStatus)
 	case ArchetypeNamespaceInventory:
@@ -308,6 +315,12 @@ func (a *Agent) GenerateStreamWithIntent(ctx context.Context, userPrompt string,
 		code = synthesizeScaleBenchmarkUI(topo, preset)
 	default:
 		code = a.generateFallbackStream(userPrompt, telemetry, onStatus)
+	}
+
+	if a.genaiClient != nil && !a.cfg.ForceMock && intent.Archetype != ArchetypeScaleBenchmark && intent.Archetype != ArchetypeLogsConsole {
+		if liveCode := a.SynthesizeLiveArrowJS(ctx, userPrompt, intent, topo, telemetry, findings, envelope, allScope, onStatus); liveCode != "" {
+			code = liveCode
+		}
 	}
 
 	if a.mastHarness != nil {
@@ -374,71 +387,252 @@ func repairArrowJSAttributesGo(code string) string {
 	})
 }
 
+func sanitizeGeneratedArrowJS(raw string) string {
+	cleaned := strings.TrimSpace(raw)
+	cleaned = strings.TrimPrefix(cleaned, "```javascript")
+	cleaned = strings.TrimPrefix(cleaned, "```js")
+	cleaned = strings.TrimPrefix(cleaned, "```")
+	cleaned = strings.TrimSuffix(cleaned, "```")
+	cleaned = strings.TrimSpace(cleaned)
+
+	reImport := regexp.MustCompile(`(?m)^\s*import\s+.*?;\s*$`)
+	cleaned = reImport.ReplaceAllString(cleaned, "")
+	reExport := regexp.MustCompile(`(?m)^\s*export\s+(?:default\s+)?`)
+	cleaned = reExport.ReplaceAllString(cleaned, "")
+	cleaned = strings.ReplaceAll(cleaned, "window.dispatchEvent(", "container.dispatchEvent(")
+	cleaned = repairArrowJSAttributesGo(cleaned)
+	return strings.TrimSpace(cleaned)
+}
+
+func buildCompactSynthesisContext(topo *api.TopologyData, telemetry *api.TelemetryData, intent LLMIntentResult, findings []api.LookoutFinding, allScope []api.K8sResource) string {
+	type compactCluster struct {
+		Name          string   `json:"name"`
+		Location      string   `json:"location"`
+		Status        string   `json:"status"`
+		PodCount      int      `json:"pod_count"`
+		UnhealthyPods int      `json:"unhealthy_pods"`
+		Namespaces    []string `json:"namespaces"`
+	}
+	type compactPod struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		Cluster   string `json:"cluster"`
+		Status    string `json:"status"`
+		Node      string `json:"node,omitempty"`
+	}
+	type compactResource struct {
+		Kind      string `json:"kind"`
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		Cluster   string `json:"cluster"`
+		Status    string `json:"status"`
+		Replicas  string `json:"replicas,omitempty"`
+	}
+
+	var clusters []compactCluster
+	var pods []compactPod
+	var resources []compactResource
+
+	targetCluster := intent.TargetCluster
+	if targetCluster == "" && telemetry != nil && telemetry.Metrics != nil {
+		targetCluster = telemetry.Metrics["cluster"]
+	}
+
+	if topo != nil {
+		for _, c := range topo.Clusters {
+			if targetCluster == "" && telemetry != nil && strings.Contains(telemetry.ResourceURI, c.Name) {
+				targetCluster = c.Name
+			}
+			var nsNames []string
+			podCount := 0
+			unhealthy := 0
+			for _, ns := range c.Namespaces {
+				nsNames = append(nsNames, ns.Name)
+				for _, p := range ns.Pods {
+					podCount++
+					if p.Status != "Running" {
+						unhealthy++
+					}
+					isFocusedCluster := targetCluster == "" || strings.EqualFold(c.Name, targetCluster)
+					isMatch := p.Status != "Running" ||
+						(intent.TargetPod != "" && strings.Contains(p.Name, intent.TargetPod)) ||
+						(telemetry != nil && telemetry.PodID != "" && strings.Contains(p.Name, telemetry.PodID)) ||
+						(intent.TargetNamespace != "" && strings.EqualFold(ns.Name, intent.TargetNamespace))
+					if (isFocusedCluster || isMatch) && len(pods) < 25 {
+						pods = append(pods, compactPod{
+							Name:      p.Name,
+							Namespace: ns.Name,
+							Cluster:   c.Name,
+							Status:    string(p.Status),
+							Node:      p.Labels["ephemeris.io/node"],
+						})
+					}
+				}
+				for _, r := range ns.Resources {
+					isFocusedCluster := targetCluster == "" || strings.EqualFold(c.Name, targetCluster)
+					if isFocusedCluster && len(resources) < 20 {
+						resources = append(resources, compactResource{
+							Kind:      r.Kind,
+							Name:      r.Name,
+							Namespace: ns.Name,
+							Cluster:   c.Name,
+							Status:    r.Status,
+							Replicas:  r.Replicas,
+						})
+					}
+				}
+			}
+			clusterStatus := "Running"
+			if unhealthy > 0 {
+				clusterStatus = "Degraded"
+			}
+			clusters = append(clusters, compactCluster{
+				Name:          c.Name,
+				Location:      c.Location,
+				Status:        clusterStatus,
+				PodCount:      podCount,
+				UnhealthyPods: unhealthy,
+				Namespaces:    nsNames,
+			})
+		}
+	}
+
+	if len(resources) == 0 && len(allScope) > 0 {
+		for i, r := range allScope {
+			if i >= 20 {
+				break
+			}
+			resources = append(resources, compactResource{
+				Kind:      r.Kind,
+				Name:      r.Name,
+				Namespace: r.Namespace,
+				Cluster:   r.Cluster,
+				Status:    r.Status,
+				Replicas:  r.Replicas,
+			})
+		}
+	}
+
+	var recentLogs []api.LogEntry
+	var metrics map[string]string
+	var resURI, podID string
+	if telemetry != nil {
+		resURI = telemetry.ResourceURI
+		podID = telemetry.PodID
+		metrics = telemetry.Metrics
+		if len(telemetry.Logs) > 12 {
+			recentLogs = telemetry.Logs[:12]
+		} else {
+			recentLogs = telemetry.Logs
+		}
+	}
+
+	cappedFindings := findings
+	if len(cappedFindings) > 12 {
+		cappedFindings = cappedFindings[:12]
+	}
+
+	ctxPayload := map[string]interface{}{
+		"selected_resource_uri": resURI,
+		"selected_pod":          podID,
+		"focused_cluster":       targetCluster,
+		"metrics":               metrics,
+		"recent_logs":           recentLogs,
+		"lookout_findings":      cappedFindings,
+		"clusters":              clusters,
+		"pods":                  pods,
+		"k8s_resources":         resources,
+	}
+	b, _ := json.Marshal(ctxPayload)
+	return string(b)
+}
+
+// SynthesizeLiveArrowJS calls Vertex AI Gemini to synthesize a bespoke, interactive @arrow-js/core component grounded in live GKE topology, container logs, and k8s-lookout findings.
+func (a *Agent) SynthesizeLiveArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, telemetry *api.TelemetryData, findings []api.LookoutFinding, _ string, allScope []api.K8sResource, onStatus func(string)) string {
+	if a.genaiClient == nil || a.cfg.ForceMock {
+		return ""
+	}
+
+	if onStatus != nil {
+		onStatus(fmt.Sprintf("🧠 [mast:arrowjs-compiler] Synthesizing bespoke ArrowJS UI via Vertex AI (%s)...", a.cfg.Model))
+	}
+
+	compactJSON := buildCompactSynthesisContext(topo, telemetry, intent, findings, allScope)
+
+	synthPrompt := fmt.Sprintf(`You are the Ephemeris Agentic UI Compiler writing a reactive SRE triage & observability interface using @arrow-js/core.
+Synthesize a self-contained ArrowJS component that directly answers the user's Kubernetes/GKE prompt using the live GKE cluster topology, container logs/events, and k8s-lookout findings below.
+
+User Prompt: %q
+Resolved Intent Archetype: %q (Target Cluster: %q, Namespace: %q, Pod/Workload: %q, Kinds: %v)
+Intent Reasoning: %q
+
+Live GKE & MCP Context JSON:
+%s
+
+SANDBOX ENVIRONMENT (Isolated ShadowRoot):
+- Available variables in scope: reactive, html (from @arrow-js/core), data (telemetry object), container (mount element).
+- window, document, fetch, localStorage are undefined (masked for security). DO NOT reference window or document.
+- To focus a Pod in the 3D WebGL scene when clicked:
+  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', { detail: { podId: podName, namespace: ns, clusterName: cluster }, bubbles: true, composed: true }))
+- To focus a Controller/Service/Gateway in the 3D WebGL scene when clicked:
+  container.dispatchEvent(new CustomEvent('ephemeris-focus-resource', { detail: { resourceName: name, kind: kind, namespace: ns, clusterName: cluster }, bubbles: true, composed: true }))
+- To trigger Pod/Workload remediation when clicked:
+  container.dispatchEvent(new CustomEvent('ephemeris-remediated', { detail: { podId: name, namespace: ns, action: 'rolling-restart' }, bubbles: true, composed: true }))
+
+CRITICAL ARROWJS SYNTAX RULES:
+1. NEVER use partial attribute interpolation like style="color: ${x}" or class="btn ${y}". ArrowJS throws 'Invalid HTML position' if an attribute mixes static text and ${...}. Wrap the ENTIRE attribute value inside a single ${() => ...} expression:
+   style="${() => 'color: ' + (state.active ? '#38bdf8' : '#94a3b8') + '; cursor: pointer;'}"
+2. Define const state = reactive({ ... }); with interactive tabs or filters, define const template = html`+"`...`"+`; and end with template(container);
+3. Embed the real cluster/pod/resource/log data from the JSON directly as JavaScript arrays/objects in your code so the UI renders rich, accurate live GKE data immediately. Include clickable rows/buttons that dispatch ephemeris-select-pod or ephemeris-focus-resource on container.
+4. Return ONLY valid JavaScript code (no markdown fences, no import/export statements).
+5. Style the root container with style="display: flex; flex-direction: column; gap: 12px; font-family: 'Inter', system-ui, sans-serif; color: #f8fafc;"`,
+		userPrompt, intent.Archetype, intent.TargetCluster, intent.TargetNamespace, intent.TargetPod, intent.TargetKinds, intent.Reasoning, compactJSON)
+
+	modelsToTry := []string{a.cfg.Model, "gemini-2.5-flash", "gemini-2.0-flash"}
+	seen := make(map[string]bool)
+	for _, modelName := range modelsToTry {
+		if modelName == "" || seen[modelName] {
+			continue
+		}
+		seen[modelName] = true
+		resp, err := a.genaiClient.Models.GenerateContent(ctx, modelName, genai.Text(synthPrompt), nil)
+		if err != nil {
+			log.Printf("[agent/arrowjs] Vertex AI synthesis with %s failed: %v", modelName, err)
+			continue
+		}
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			var rawCode strings.Builder
+			for _, part := range resp.Candidates[0].Content.Parts {
+				rawCode.WriteString(part.Text)
+			}
+			cleaned := sanitizeGeneratedArrowJS(rawCode.String())
+			if strings.Contains(cleaned, "reactive(") && strings.Contains(cleaned, "html`") && strings.Contains(cleaned, "template(container)") {
+				a.cfg.Model = modelName
+				log.Printf("[agent/arrowjs] Synthesized bespoke ArrowJS UI (%d bytes) via Vertex AI %s for prompt=%q", len(cleaned), modelName, userPrompt)
+				if onStatus != nil {
+					onStatus(fmt.Sprintf("✨ [mast:arrowjs-compiler] Synthesized bespoke ArrowJS UI via Vertex AI %s", modelName))
+				}
+				return cleaned
+			}
+		}
+	}
+	return ""
+}
+
 // SynthesizeDynamicArrowJS renders the interactive Kubernetes & CRD Explorer for K8s object queries, or asks Vertex AI Gemini 3.8-flash to synthesize bespoke ArrowJS UI code for custom analytical queries.
-func (a *Agent) SynthesizeDynamicArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, _ *api.TelemetryData, findings []api.LookoutFinding, envelope string, allScope []api.K8sResource, onStatus func(string)) string {
+func (a *Agent) SynthesizeDynamicArrowJS(ctx context.Context, userPrompt string, intent LLMIntentResult, topo *api.TopologyData, telemetry *api.TelemetryData, findings []api.LookoutFinding, envelope string, allScope []api.K8sResource, onStatus func(string)) string {
 	targetKinds := intent.TargetKinds
 	if len(targetKinds) == 0 {
 		targetKinds = extractKindsFromPrompt(userPrompt)
 	}
 	fallbackCode := synthesizeK8sResourcesUI(allScope, intent.TargetCluster, targetKinds, envelope)
 
-	// Use the rich interactive K8s Controllers & CRD Explorer (with 3D focus and dynamic per-Kind filter pills) for all K8s controller/CRD queries
-	if len(targetKinds) > 0 || strings.Contains(strings.ToLower(userPrompt), "controller") {
-		return fallbackCode
-	}
-
 	if a.genaiClient == nil || a.cfg.ForceMock {
 		return fallbackCode
 	}
 
-	topoJSON, _ := json.Marshal(topo)
-	findingsJSON, _ := json.Marshal(findings)
-
-	synthPrompt := fmt.Sprintf(`You are an expert SRE Frontend Engineer writing reactive UI components using @arrow-js/core.
-Write a self-contained ArrowJS component that answers the user's Kubernetes/GKE query: %q
-Target Cluster filter: %q
-
-You have access in scope to:
-- reactive, html (from @arrow-js/core)
-- container (DOM element to mount into via template(container))
-- CustomEvent dispatch on container:
-  container.dispatchEvent(new CustomEvent('ephemeris-select-pod', { detail: { podId: name }, bubbles: true, composed: true }))
-
-Live Cluster Topology & Resources JSON:
-%s
-
-k8s-lookout Findings JSON:
-%s
-
-CRITICAL ARROWJS RULE:
-NEVER use partial attribute interpolation like style="color: ${x}" or class="box ${y}". ArrowJS throws 'Invalid HTML position' if an attribute contains ${...} along with any other text inside the quotes. Every dynamic attribute MUST wrap the ENTIRE attribute string inside ${() => ...}, e.g.:
-style="${() => 'color: ' + x + '; font-size: 12px;'}"
-
-Requirements:
-1. Return ONLY valid JavaScript code (no markdown code fences).
-2. Define const state = reactive({ ... }); and const template = html`+"`...`"+`; and end with template(container);
-3. Use dark glassmorphic styling (font-family: 'Inter', system-ui, sans-serif; color: #f8fafc; background: rgba(15, 23, 42, 0.85)).`,
-		userPrompt, intent.TargetCluster, string(topoJSON), string(findingsJSON))
-
-	resp, err := a.genaiClient.Models.GenerateContent(ctx, a.cfg.Model, genai.Text(synthPrompt), nil)
-	if err == nil && len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
-		var rawCode strings.Builder
-		for _, part := range resp.Candidates[0].Content.Parts {
-			rawCode.WriteString(part.Text)
-		}
-		cleaned := strings.TrimSpace(rawCode.String())
-		cleaned = strings.TrimPrefix(cleaned, "```javascript")
-		cleaned = strings.TrimPrefix(cleaned, "```js")
-		cleaned = strings.TrimPrefix(cleaned, "```")
-		cleaned = strings.TrimSuffix(cleaned, "```")
-		cleaned = strings.TrimSpace(cleaned)
-		cleaned = repairArrowJSAttributesGo(cleaned)
-		if strings.Contains(cleaned, "reactive(") && strings.Contains(cleaned, "html`") && strings.Contains(cleaned, "template(container)") {
-			if onStatus != nil {
-				onStatus("✨ [mast:arrowjs-compiler] Synthesized bespoke ArrowJS UI via Gemini 3.8-flash")
-			}
-			return cleaned
-		}
+	if liveCode := a.SynthesizeLiveArrowJS(ctx, userPrompt, intent, topo, telemetry, findings, envelope, allScope, onStatus); liveCode != "" {
+		return liveCode
 	}
 
 	return fallbackCode

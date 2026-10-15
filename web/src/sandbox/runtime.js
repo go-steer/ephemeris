@@ -1260,6 +1260,12 @@ export class ArrowSandboxRuntime {
           .replace(/\n?```\s*$/, '');
       }
 
+      // Strip accidental ES module import/export statements emitted by LLMs inside new Function()
+      sanitizedCode = sanitizedCode
+        .replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
+        .replace(/^\s*export\s+default\s+/gm, '')
+        .replace(/^\s*export\s+(?=(?:const|let|var|function)\b)/gm, '');
+
       // Rewrite any window.dispatchEvent to container.dispatchEvent so spatial events bubble safely
       sanitizedCode = sanitizedCode.replace(
         /\bwindow\.dispatchEvent\s*\(/g,
