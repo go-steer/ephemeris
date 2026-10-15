@@ -8,7 +8,7 @@ require (
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/adk/v2 v2.2.0
 	google.golang.org/api v0.291.0
-	google.golang.org/genai v1.71.0
+	google.golang.org/genai v1.73.0
 	k8s.io/api v0.32.2
 	k8s.io/apimachinery v0.32.2
 	k8s.io/client-go v0.32.2
